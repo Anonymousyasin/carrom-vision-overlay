@@ -194,6 +194,28 @@ object Predictor {
         return Prediction(sPath, hit, cPath, pocket, best)
     }
 
+    /** Manual-table aim: angle that pots [target] into [pocket] from [striker]. */
+    fun aimAt(
+        striker: Pair<Float, Float>,
+        target: Pair<Float, Float>,
+        pocket: Pair<Float, Float>,
+    ): Triple<Float, Float, Float> {
+        val pdx = pocket.first - target.first
+        val pdy = pocket.second - target.second
+        val plen = hypot(pdx.toDouble(), pdy.toDouble()).toFloat()
+        val gx = target.first - pdx / plen * 2 * COIN_RADIUS
+        val gy = target.second - pdy / plen * 2 * COIN_RADIUS
+        val sdx = gx - striker.first
+        val sdy = gy - striker.second
+        val slen = hypot(sdx.toDouble(), sdy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+        val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
+        var deg = (Math.toDegrees(rad.toDouble()).toFloat() + 90f) % 360f
+        if (deg < 0) deg += 360f
+        val cosCut = ((sdx / slen) * (pdx / plen) + (sdy / slen) * (pdy / plen)).coerceIn(-1f, 1f)
+        val cut = Math.toDegrees(acos(cosCut.toDouble())).toFloat()
+        return Triple(rad, deg, cut)
+    }
+
     /** Demo layout estimated from real pool1.jpg center cluster. */
     fun demoState(): Pair<Pair<Float, Float>, List<Coin>> {
         val striker = 460f to 360f
