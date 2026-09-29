@@ -112,8 +112,6 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
             addView(row(
                 sideBtn,
-                sbtn("R−") { view.adjustSelected(0.9f) },
-                sbtn("R+") { view.adjustSelected(1.1f) },
                 sbtn("Aim−") { aimDeg = (aimDeg - 2f + 360f) % 360f; manualAim = true; refresh(null) },
                 sbtn("Aim+") { aimDeg = (aimDeg + 2f) % 360f; manualAim = true; refresh(null) },
                 saveBtn,

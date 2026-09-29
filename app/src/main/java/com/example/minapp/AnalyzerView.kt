@@ -322,7 +322,6 @@ class AnalyzerView(context: Context) : View(context) {
         when (activeMark) {
             "S" -> {
                 markers["S"] = c
-                markRadii["S"] = defaultR("S")
                 selMark = "S"; selCoin = -1
                 onChanged?.invoke()
                 invalidate()
@@ -332,7 +331,6 @@ class AnalyzerView(context: Context) : View(context) {
                 if (n <= 4) {
                     val k = "P$n"
                     markers[k] = c
-                    markRadii[k] = defaultR("P")
                     selMark = k; selCoin = -1
                     onChanged?.invoke()
                     invalidate()
@@ -346,7 +344,7 @@ class AnalyzerView(context: Context) : View(context) {
                 }
                 if (t == "red") coins.removeAll { it.type == "red" }
                 if (coins.size < 20) {
-                    coins.add(CoinMark(c, t, defaultR("C")))
+                    coins.add(CoinMark(c, t))
                     selCoin = coins.size - 1; selMark = null
                     onChanged?.invoke()
                     invalidate()
@@ -442,7 +440,7 @@ class AnalyzerView(context: Context) : View(context) {
             box.left to box.bottom, box.right to box.bottom,
         )) canvas.drawCircle(cx, cy, 16f * px, handlePaint)
 
-        // numbered coin labels per type: B1.., W1.., Q — true tapped radii
+        // old fixed-dot marks: B1.., W1.., Q
         val counters = mutableMapOf("black" to 0, "white" to 0, "red" to 0)
         for ((i, c) in coins.withIndex()) {
             val n = (counters[c.type] ?: 0) + 1
@@ -452,14 +450,14 @@ class AnalyzerView(context: Context) : View(context) {
                 "white" -> "W$n"
                 else -> "Q"
             }
-            val rr = coinR(i)
+            val rr = 15f * px
             dotPaint.color = coinColor(c.type)
             canvas.drawCircle(c.p.x, c.p.y, rr, dotPaint)
             ringPaint.color = Color.BLACK
             ringPaint.strokeWidth = 3f * px
             canvas.drawCircle(c.p.x, c.p.y, rr, ringPaint)
             labelPaint.textSize = 30f * px
-            canvas.drawText(label, c.p.x + (rr + 6f * px), c.p.y + 10f * px, labelPaint)
+            canvas.drawText(label, c.p.x + 20f * px, c.p.y + 10f * px, labelPaint)
             if (selCoin == i) {
                 ringPaint.color = Color.YELLOW
                 ringPaint.strokeWidth = 4f * px
@@ -475,18 +473,18 @@ class AnalyzerView(context: Context) : View(context) {
                 k.startsWith("P") -> Color.GREEN
                 else -> Color.WHITE
             }
-            val rr = markR(k)
+            val rr = 14f * px
             dotPaint.color = col
-            canvas.drawCircle(m.x, m.y, rr * 0.55f, dotPaint)
+            canvas.drawCircle(m.x, m.y, rr, dotPaint)
             ringPaint.color = col
             ringPaint.strokeWidth = 5f * px
-            canvas.drawCircle(m.x, m.y, rr, ringPaint)
+            canvas.drawCircle(m.x, m.y, 26f * px, ringPaint)
             labelPaint.textSize = 30f * px
-            canvas.drawText(k, m.x + rr + 6f * px, m.y + 10f * px, labelPaint)
+            canvas.drawText(k, m.x + 30f * px, m.y + 10f * px, labelPaint)
             if (selMark == k) {
                 ringPaint.color = Color.YELLOW
                 ringPaint.strokeWidth = 4f * px
-                canvas.drawCircle(m.x, m.y, rr + 8f * px, ringPaint)
+                canvas.drawCircle(m.x, m.y, 26f * px + 8f * px, ringPaint)
             }
         }
         fun path(pts: List<PointF>, paint: Paint, w: Float) {
