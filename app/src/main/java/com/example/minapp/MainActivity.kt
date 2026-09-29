@@ -20,6 +20,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusOverlay: TextView
     private lateinit var statusShizuku: TextView
     private lateinit var statusDemo: TextView
+    private lateinit var sideBtn: Button
+
+    private fun isWhite(): Boolean =
+        getSharedPreferences("cv_prefs", MODE_PRIVATE).getBoolean("playWhite", true)
 
     private val shizukuListener =
         Shizuku.OnRequestPermissionResultListener { _, grantResult ->
@@ -54,6 +58,17 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
 
+        sideBtn = Button(this).apply {
+            textSize = 18f
+            setOnClickListener {
+                val w = !isWhite()
+                getSharedPreferences("cv_prefs", MODE_PRIVATE).edit()
+                    .putBoolean("playWhite", w).apply()
+                refreshSide()
+                toast(if (w) "You play WHITE" else "You play BLACK")
+            }
+        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -63,6 +78,7 @@ class MainActivity : AppCompatActivity() {
             })
             addView(statusOverlay)
             addView(statusShizuku)
+            addView(sideBtn)
             addView(btn("1. Grant overlay permission") { askOverlayPermission() })
             addView(btn("2. Request Shizuku permission") { ShizukuCap.requestPermission(100); })
             addView(btn("3. Start overlay over Carrom Pool") { startOverlay() })
@@ -82,6 +98,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        refreshSide()
     }
 
     override fun onDestroy() {
@@ -93,6 +110,11 @@ class MainActivity : AppCompatActivity() {
         val ok = Settings.canDrawOverlays(this)
         statusOverlay.text = if (ok) "Overlay: granted ✓" else "Overlay: NOT granted — tap 1"
         statusShizuku.text = ShizukuCap.statusText()
+    }
+
+    private fun refreshSide() {
+        val w = isWhite()
+        sideBtn.text = if (w) "⬤ I play WHITE (tap for Black)" else "⬤ I play BLACK (tap for White)"
     }
 
     private fun askOverlayPermission() {

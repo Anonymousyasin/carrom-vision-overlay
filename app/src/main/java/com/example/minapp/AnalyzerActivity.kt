@@ -35,8 +35,7 @@ class AnalyzerActivity : AppCompatActivity() {
     private lateinit var skipBtn: Button
 
     private var step = Step.BOX
-    private var playWhite = true
-    private var aimDeg = 0f
+    private var playWhite = true    private var aimDeg = 0f
     private var manualAim = false
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
@@ -111,6 +110,9 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
         }
         setContentView(root)
+        // saved color from the menu ("I play White/Black"); RESULT toggle still overrides
+        playWhite = getSharedPreferences("cv_prefs", MODE_PRIVATE).getBoolean("playWhite", true)
+        sideBtn.text = if (playWhite) "I:White" else "I:Black"
         applyStep()
     }
 
