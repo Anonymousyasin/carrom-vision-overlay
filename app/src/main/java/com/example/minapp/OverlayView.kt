@@ -16,6 +16,8 @@ class OverlayView @JvmOverloads constructor(
     var striker: Pair<Float, Float> = 460f to 360f
     var coins: List<Predictor.Coin> = emptyList()
     var prediction: Predictor.Prediction? = null
+    /** Board scale 0.7–1.0, tuned live with Zoom slider so lines sit on the real board. */
+    var boardZoom: Float = 1f
 
     private val boardPaint = Paint().apply { color = Color.parseColor("#c49a6c"); style = Paint.Style.FILL }
     private val pocketPaint = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
@@ -41,9 +43,10 @@ class OverlayView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        // fit 600-space into view
-        val scale = minOf(width / 600f, height / 600f)
+        // fit 600-space into view, centered (overlay is fullscreen over the game)
+        val scale = minOf(width / 600f, height / 600f) * boardZoom
         canvas.save()
+        canvas.translate((width - 600f * scale) / 2f, (height - 600f * scale) / 2f)
         canvas.scale(scale, scale)
 
         canvas.drawRect(0f, 0f, 600f, 600f, boardPaint)
