@@ -8,50 +8,276 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.hypot
 
 /**
- * Screenshot analyzer view. All state lives in IMAGE pixels; the bitmap is
- * drawn fit-centered and touches are converted view->image.
- * Host activity owns the flow (box drag, marker taps, coin painting).
+ * v5 screenshot analyzer view. State in IMAGE pixels. View matrix =
+ * fit-scale * zoom + pan; pinch zooms (1..4x), 1-finger drag pans,
+ * quick tap places (time/distance gate so pinch never misplaces).
  */
 class AnalyzerView(context: Context) : View(context) {
 
     var bitmap: Bitmap? = null
     var box = RectF()
     var boxInitDone = false
-    val markers = mutableMapOf<String, PointF>() // S, P1, P2 (image px)
-    val coins = mutableListOf<CoinMark>() // tapped coins (image px)
+    val markers = mutableMapOf<String, PointF>() // S, P1..P4 (image px)
+    val coins = mutableListOf<CoinMark>() // image px, type locked by wizard step
 
     data class CoinMark(val p: PointF, val type: String)
 
-    var activeMark: String? = null // BOX, S, P1, P2, COIN
-    var coinType = "white"
+    var activeMark: String? = null // BOX, BLACK, WHITE, QUEEN, S, POCKET
+    var onChanged: (() -> Unit)? = null
+
     var strikerPath: List<PointF> = emptyList()
     var coinPath: List<PointF> = emptyList()
     var strikerAfter: List<PointF> = emptyList()
     var bestTarget: PointF? = null
     var pocket: PointF? = null
 
-    var onChanged: (() -> Unit)? = null
+    // ---- view matrix ----
+    private var baseScale = 1f
+    private var baseX = 0f
+    private var baseY = 0f
+    var zoom = 1f
+    private var panX = 0f
+    private var panY = 0f
 
-    // view transform for current size
-    private var scale = 1f
-    private var offX = 0f
-    private var offY = 0f
-
-    private fun transform() {
+    private fun fit() {
         val bm = bitmap ?: return
-        scale = minOf(width / bm.width.toFloat(), height / bm.height.toFloat()).coerceAtLeast(1e-6f)
-        offX = (width - bm.width * scale) / 2f
-        offY = (height - bm.height * scale) / 2f
+        if (width == 0 || height == 0) return
+        baseScale = minOf(width / bm.width.toFloat(), height / bm.height.toFloat())
+            .coerceAtLeast(1e-6f)
+        baseX = (width - bm.width * baseScale) / 2f
+        baseY = (height - bm.height * baseScale) / 2f
     }
 
-    fun toView(p: PointF): PointF = PointF(offX + p.x * scale, offY + p.y * scale)
-    fun toImage(x: Float, y: Float): PointF = PointF((x - offX) / scale, (y - offY) / scale)
+    private fun totalScale() = baseScale * zoom
+    private fun toViewX(x: Float) = baseX + panX + x * totalScale()
+    private fun toViewY(y: Float) = baseY + panY + y * totalScale()
+    fun toImage(vx: Float, vy: Float): PointF =
+        PointF((vx - baseX - panX) / totalScale(), (vy - baseY - panY) / totalScale())
 
+    fun resetZoom() {
+        zoom = 1f; panX = 0f; panY = 0f
+        invalidate()
+    }
+
+    // ---- touch: tap gate + drag + pinch ----
+    private var mode = 0 // 0 idle, 1 tap?, 2 pan/move/resize, 3 pinch
+    private var downX = 0f
+    private var downY = 0f
+    private var downT = 0L
+    private var lastX = 0f
+    private var lastY = 0f
+    private var boxDrag = 0 // 1 move, 2 resize
+    private var pinchStart = 0f
+    private var zoomStart = 1f
+    private var focusX = 0f
+    private var focusY = 0f
+
+    init {
+        setOnTouchListener { _, e ->
+            val bm = bitmap ?: return@setOnTouchListener false
+            fit()
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
+                    downT = e.eventTime
+                    mode = 1
+                    if (activeMark == "BOX") {
+                        val ip = toImage(e.x, e.y)
+                        val tol = 70f / totalScale()
+                        boxDrag = if (hypot(
+                                (ip.x - box.right).toDouble(),
+                                (ip.y - box.bottom).toDouble(),
+                            ) < tol
+                        ) 2 else 1
+                    }
+                    true
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (e.pointerCount == 2) {
+                        mode = 3
+                        pinchStart = span(e)
+                        zoomStart = zoom
+                        focusX = (e.getX(0) + e.getX(1)) / 2f
+                        focusY = (e.getY(0) + e.getY(1)) / 2f
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    when (mode) {
+                        3 -> {
+                            if (e.pointerCount >= 2) {
+                                val s = span(e)
+                                if (pinchStart > 0) {
+                                    val fx = (e.getX(0) + e.getX(1)) / 2f
+                                    val fy = (e.getY(0) + e.getY(1)) / 2f
+                                    setZoom(zoomStart * s / pinchStart, fx, fy)
+                                    panX += fx - focusX
+                                    panY += fy - focusY
+                                    focusX = fx; focusY = fy
+                                }
+                                invalidate()
+                            }
+                            true
+                        }
+                        1 -> {
+                            if (hypot(
+                                    (e.x - downX).toDouble(),
+                                    (e.y - downY).toDouble(),
+                                ) > 12f
+                            ) {
+                                mode = 2 // becomes pan (or box drag below)
+                            }
+                            if (mode == 2) {
+                                lastX = e.x; lastY = e.y
+                            }
+                            true
+                        }
+                        2 -> {
+                            if (activeMark == "BOX" && boxDrag != 0) {
+                                // box drag in image coords
+                                val a = toImage(lastX, lastY)
+                                val b = toImage(e.x, e.y)
+                                moveBox(b.x - a.x, b.y - a.y, boxDrag == 2, bm)
+                                lastX = e.x; lastY = e.y
+                                onChanged?.invoke()
+                            } else {
+                                panX += e.x - lastX
+                                panY += e.y - lastY
+                                clampPan()
+                                lastX = e.x; lastY = e.y
+                            }
+                            invalidate()
+                            true
+                        }
+                        else -> false
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val wasTap = mode == 1 &&
+                        hypot((e.x - downX).toDouble(), (e.y - downY).toDouble()) < 12f &&
+                        e.eventTime - downT < 400
+                    mode = 0
+                    boxDrag = 0
+                    if (wasTap && e.actionMasked == MotionEvent.ACTION_UP) {
+                        handleTap(toImage(e.x, e.y), bm)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun span(e: MotionEvent): Float =
+        hypot(
+            (e.getX(0) - e.getX(1)).toDouble(),
+            (e.getY(0) - e.getY(1)).toDouble(),
+        ).toFloat()
+
+    private fun setZoom(z: Float, fx: Float, fy: Float) {
+        val nz = z.coerceIn(1f, 4f)
+        // keep focus point stable: pan compensates scale change around focus
+        val k = nz / zoom
+        panX = fx - baseX - (fx - baseX - panX) * k
+        panY = fy - baseY - (fy - baseY - panY) * k
+        zoom = nz
+        clampPan()
+    }
+
+    private fun clampPan() {
+        val bm = bitmap ?: return
+        val w = bm.width * totalScale()
+        val h = bm.height * totalScale()
+        // keep at least 1/4 of the image on screen each side
+        panX = panX.coerceIn(width * 0.25f - w, width * 0.75f)
+        panY = panY.coerceIn(height * 0.25f - h, height * 0.75f)
+    }
+
+    private fun moveBox(dx: Float, dy: Float, resize: Boolean, bm: Bitmap) {
+        if (!resize) {
+            val w = box.width()
+            val nx = (box.left + dx).coerceIn(0f, bm.width - w)
+            val ny = (box.top + dy).coerceIn(0f, bm.height - w)
+            box = RectF(nx, ny, nx + w, ny + w)
+        } else {
+            val grow = (dx + dy) / 2f
+            val cx = box.centerX()
+            val cy = box.centerY()
+            val half = (box.width() / 2f + grow)
+                .coerceIn(100f, bm.width.coerceAtMost(bm.height) / 2f)
+            box = RectF(cx - half, cy - half, cx + half, cy + half)
+        }
+    }
+
+    private var tapSeq = 0
+
+    private fun handleTap(ip: PointF, bm: Bitmap) {
+        val c = PointF(
+            ip.x.coerceIn(0f, bm.width.toFloat()),
+            ip.y.coerceIn(0f, bm.height.toFloat()),
+        )
+        when (activeMark) {
+            "S" -> {
+                markers["S"] = c
+                tapSeq++
+                onChanged?.invoke()
+                invalidate()
+            }
+            "POCKET" -> {
+                val n = markers.keys.count { it.startsWith("P") } + 1
+                if (n <= 4) {
+                    markers["P$n"] = c
+                    tapSeq++
+                    onChanged?.invoke()
+                    invalidate()
+                }
+            }
+            "BLACK", "WHITE", "QUEEN" -> {
+                if (coins.size < 20) {
+                    val t = when (activeMark) {
+                        "BLACK" -> "black"
+                        "WHITE" -> "white"
+                        else -> "red"
+                    }
+                    coins.add(CoinMark(c, t))
+                    tapSeq++
+                    onChanged?.invoke()
+                    invalidate()
+                }
+            }
+            else -> { } // BOX mode uses drag; null = explore only
+        }
+    }
+
+    // ---- pulse last marker so the active step is visible ----
+    private var pulseOn = true
+    private val pulseTick = object : Runnable {
+        override fun run() {
+            pulseOn = !pulseOn
+            invalidate()
+            pulseHandler.postDelayed(this, 550)
+        }
+    }
+    private val pulseHandler = Handler(Looper.getMainLooper())
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        pulseHandler.post(pulseTick)
+    }
+
+    override fun onDetachedFromWindow() {
+        pulseHandler.removeCallbacks(pulseTick)
+        super.onDetachedFromWindow()
+    }
+
+    // ---- draw ----
     private val boxPaint = Paint().apply {
         color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f; isAntiAlias = true
     }
@@ -80,6 +306,9 @@ class AnalyzerView(context: Context) : View(context) {
         color = Color.WHITE; textSize = 34f; isAntiAlias = true
         setShadowLayer(6f, 0f, 0f, Color.BLACK)
     }
+    private val pulsePaint = Paint().apply {
+        color = Color.YELLOW; style = Paint.Style.STROKE; strokeWidth = 4f; isAntiAlias = true
+    }
 
     fun coinColor(t: String): Int = when (t) {
         "white" -> Color.parseColor("#f0e6d2")
@@ -88,84 +317,10 @@ class AnalyzerView(context: Context) : View(context) {
         else -> Color.CYAN
     }
 
-    init {
-        var dragMode = 0
-        var lastIX = 0f
-        var lastIY = 0f
-        setOnTouchListener { _, e ->
-            val bm = bitmap ?: return@setOnTouchListener false
-            transform()
-            val ip = toImage(e.x, e.y)
-            when (e.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    lastIX = ip.x; lastIY = ip.y
-                    when (activeMark) {
-                        "BOX" -> {
-                            val tol = 60f / scale
-                            dragMode = if (hypot(
-                                    (ip.x - box.right).toDouble(),
-                                    (ip.y - box.bottom).toDouble(),
-                                ) < tol
-                            ) 2 else 1
-                            true
-                        }
-                        "S", "P1", "P2" -> {
-                            markers[activeMark!!] = clamp(ip, bm)
-                            activeMark = null
-                            onChanged?.invoke()
-                            invalidate()
-                            true
-                        }
-                        "COIN" -> {
-                            if (coins.size < 20) {
-                                coins.add(CoinMark(clamp(ip, bm), coinType))
-                                onChanged?.invoke()
-                                invalidate()
-                            }
-                            true
-                        }
-                        else -> false
-                    }
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (activeMark != "BOX" || dragMode == 0) return@setOnTouchListener true
-                    val dx = ip.x - lastIX
-                    val dy = ip.y - lastIY
-                    lastIX = ip.x; lastIY = ip.y
-                    if (dragMode == 1) {
-                        val w = box.width()
-                        val nx = (box.left + dx).coerceIn(0f, bm.width - w)
-                        val ny = (box.top + dy).coerceIn(0f, bm.height - w)
-                        box = RectF(nx, ny, nx + w, ny + w)
-                    } else {
-                        val grow = (dx + dy) / 2f
-                        val cx = box.centerX()
-                        val cy = box.centerY()
-                        val half = ((box.width() / 2f + grow)
-                            .coerceIn(100f, bm.width.coerceAtMost(bm.height) / 2f))
-                        box = RectF(cx - half, cy - half, cx + half, cy + half)
-                    }
-                    onChanged?.invoke()
-                    invalidate()
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    dragMode = 0
-                    onChanged?.invoke()
-                    true
-                }
-                else -> false
-            }
-        }
-    }
-
-    private fun clamp(p: PointF, bm: Bitmap): PointF =
-        PointF(p.x.coerceIn(0f, bm.width.toFloat()), p.y.coerceIn(0f, bm.height.toFloat()))
-
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val bm = bitmap ?: return
-        transform()
+        fit()
         if (!boxInitDone) {
             val side = bm.width.coerceAtMost(bm.height) * 0.85f
             box = RectF(
@@ -174,59 +329,73 @@ class AnalyzerView(context: Context) : View(context) {
             )
             boxInitDone = true
         }
+        val s = totalScale()
         canvas.save()
-        canvas.translate(offX, offY)
-        canvas.scale(scale, scale)
+        canvas.translate(baseX + panX, baseY + panY)
+        canvas.scale(s, s)
         canvas.drawBitmap(bm, 0f, 0f, null)
+        val px = 1f / s // 1 screen px in image units
 
         canvas.drawRect(box, if (activeMark == "BOX") boxActivePaint else boxPaint)
         for ((cx, cy) in listOf(
             box.left to box.top, box.right to box.top,
             box.left to box.bottom, box.right to box.bottom,
-        )) canvas.drawCircle(cx, cy, 16f / scale, handlePaint)
+        )) canvas.drawCircle(cx, cy, 16f * px, handlePaint)
 
-        for (c in coins) {
+        // numbered coin labels per type: B1.., W1.., Q
+        val counters = mutableMapOf("black" to 0, "white" to 0, "red" to 0)
+        for ((i, c) in coins.withIndex()) {
+            val n = (counters[c.type] ?: 0) + 1
+            counters[c.type] = n
+            val label = when (c.type) {
+                "black" -> "B$n"
+                "white" -> "W$n"
+                else -> "Q"
+            }
             dotPaint.color = coinColor(c.type)
-            canvas.drawCircle(c.p.x, c.p.y, 15f / scale, dotPaint)
+            canvas.drawCircle(c.p.x, c.p.y, 15f * px, dotPaint)
             ringPaint.color = Color.BLACK
-            ringPaint.strokeWidth = 3f / scale
-            canvas.drawCircle(c.p.x, c.p.y, 15f / scale, ringPaint)
+            ringPaint.strokeWidth = 3f * px
+            canvas.drawCircle(c.p.x, c.p.y, 15f * px, ringPaint)
+            labelPaint.textSize = 30f * px
+            canvas.drawText(label, c.p.x + 20f * px, c.p.y + 10f * px, labelPaint)
+            if (pulseOn && i == coins.size - 1 && activeMark in listOf("BLACK", "WHITE", "QUEEN")) {
+                pulsePaint.strokeWidth = 4f * px
+                canvas.drawCircle(c.p.x, c.p.y, 24f * px, pulsePaint)
+            }
         }
         for ((k, m) in markers) {
-            val col = when (k) {
-                "S" -> Color.CYAN
-                "P1" -> Color.GREEN
-                "P2" -> Color.rgb(0, 200, 180)
+            val col = when {
+                k == "S" -> Color.CYAN
+                k.startsWith("P") -> Color.GREEN
                 else -> Color.WHITE
             }
             dotPaint.color = col
-            canvas.drawCircle(m.x, m.y, 14f / scale, dotPaint)
+            canvas.drawCircle(m.x, m.y, 14f * px, dotPaint)
             ringPaint.color = col
-            ringPaint.strokeWidth = 5f / scale
-            canvas.drawCircle(m.x, m.y, 26f / scale, ringPaint)
-            labelPaint.textSize = 30f / scale
-            canvas.drawText(k, m.x + 30f / scale, m.y + 10f / scale, labelPaint)
+            ringPaint.strokeWidth = 5f * px
+            canvas.drawCircle(m.x, m.y, 26f * px, ringPaint)
+            labelPaint.textSize = 30f * px
+            canvas.drawText(k, m.x + 30f * px, m.y + 10f * px, labelPaint)
         }
-        fun path(pts: List<PointF>, paint: Paint) {
+        fun path(pts: List<PointF>, paint: Paint, w: Float) {
+            paint.strokeWidth = w * px
             for (i in 0 until pts.size - 1) {
                 canvas.drawLine(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, paint)
             }
         }
-        strikerLine.strokeWidth = 6f / scale
-        coinLine.strokeWidth = 6f / scale
-        afterPaint.strokeWidth = 4f / scale
-        path(strikerPath, strikerLine)
-        path(coinPath, coinLine)
-        path(strikerAfter, afterPaint)
+        path(strikerPath, strikerLine, 6f)
+        path(coinPath, coinLine, 6f)
+        path(strikerAfter, afterPaint, 4f)
         bestTarget?.let {
             ringPaint.color = Color.YELLOW
-            ringPaint.strokeWidth = 5f / scale
-            canvas.drawCircle(it.x, it.y, 24f / scale, ringPaint)
+            ringPaint.strokeWidth = 5f * px
+            canvas.drawCircle(it.x, it.y, 24f * px, ringPaint)
         }
         pocket?.let {
             ringPaint.color = Color.GREEN
-            ringPaint.strokeWidth = 6f / scale
-            canvas.drawCircle(it.x, it.y, 34f / scale, ringPaint)
+            ringPaint.strokeWidth = 6f * px
+            canvas.drawCircle(it.x, it.y, 34f * px, ringPaint)
         }
         canvas.restore()
     }

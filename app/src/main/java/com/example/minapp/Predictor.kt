@@ -90,6 +90,7 @@ object Predictor {
     fun predictPath(
         striker: Pair<Float, Float>, angle: Float,
         coins: List<Coin>, maxRebounds: Int = 1,
+        pockets: List<Pair<Float, Float>> = POCKETS,
     ): Paths {
         val dx = cos(angle.toDouble()).toFloat()
         val dy = sin(angle.toDouble()).toFloat()
@@ -121,7 +122,7 @@ object Predictor {
                 if (hit == null) return@repeat
                 sPath.add(hit)
                 var pocketed = false
-                for (p in POCKETS) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
+                for (p in pockets) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
                 if (pocketed) return@repeat
                 pos = hit; ang = reflect(ang, wall)
             }
@@ -145,7 +146,7 @@ object Predictor {
             if (hit == null) return@repeat
             cPath.add(hit)
             var pocketed = false
-            for (p in POCKETS) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
+            for (p in pockets) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
             if (pocketed) return@repeat
             cp = hit; ca = reflect(ca, wall)
         }
@@ -207,12 +208,22 @@ object Predictor {
         striker: Pair<Float, Float>,
         coins: List<Coin>,
         playWhite: Boolean = true,
-    ): Shot? {
+        pockets: List<Pair<Float, Float>> = POCKETS,
+    ): Shot? = topShots(striker, coins, playWhite, pockets, 1).firstOrNull()
+
+    /** Ranked ghost-ball search over [pockets] (tapped ground truth, not ideals). */
+    fun topShots(
+        striker: Pair<Float, Float>,
+        coins: List<Coin>,
+        playWhite: Boolean = true,
+        pockets: List<Pair<Float, Float>> = POCKETS,
+        n: Int = 3,
+    ): List<Shot> {
         val mine = if (playWhite) "white" else "black"
-        var best: Shot? = null
+        val out = mutableListOf<Shot>()
         for (c in coins) {
             if (c.type != mine && c.type != "red") continue
-            for (p in POCKETS) {
+            for (p in pockets) {
                 val ddx = p.first - c.x
                 val ddy = p.second - c.y
                 val dlen = hypot(ddx.toDouble(), ddy.toDouble()).toFloat()
@@ -235,26 +246,27 @@ object Predictor {
                 val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
                 var deg = (Math.toDegrees(rad.toDouble()).toFloat() + 90f) % 360f
                 if (deg < 0) deg += 360f
-                if (best == null || score > best.score) {
-                    best = Shot(c.x, c.y, gx, gy, deg, rad, p.first, p.second, score,
-                        "${c.type} to pocket $p cut=${cut.toInt()}°")
-                }
+                out.add(
+                    Shot(c.x, c.y, gx, gy, deg, rad, p.first, p.second, score,
+                        "${c.type} to pocket $p cut=${cut.toInt()}°"),
+                )
             }
         }
-        return best
+        return out.sortedByDescending { it.score }.take(n)
     }
 
     fun fullPrediction(
         striker: Pair<Float, Float>,
         coins: List<Coin>,
         playWhite: Boolean = true,
+        pockets: List<Pair<Float, Float>> = POCKETS,
     ): Prediction {
-        val best = bestShot(striker, coins, playWhite)
+        val best = bestShot(striker, coins, playWhite, pockets)
         val angle = best?.angleRad ?: (-Math.PI / 2).toFloat()
-        val res = predictPath(striker, angle, coins)
+        val res = predictPath(striker, angle, coins, 1, pockets)
         var pocket: Pair<Float, Float>? = null
         for (p in res.coinPath + res.strikerPath + res.strikerAfter) {
-            for (pk in POCKETS) if (dist(p, pk) < POCKET_RADIUS * 1.5f) { pocket = pk; break }
+            for (pk in pockets) if (dist(p, pk) < POCKET_RADIUS * 1.5f) { pocket = pk; break }
         }
         return Prediction(res.strikerPath, res.hit, res.coinPath, pocket, best)
     }
