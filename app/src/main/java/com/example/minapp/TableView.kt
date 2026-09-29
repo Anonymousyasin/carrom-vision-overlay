@@ -46,7 +46,7 @@ class TableView(context: Context) : View(context) {
     }
     private val labelPaint = Paint().apply {
         color = Color.WHITE; textSize = 34f; isAntiAlias = true
-        shadowLayer = 6f, 0f, 0f, Color.BLACK
+        setShadowLayer(6f, 0f, 0f, Color.BLACK)
     }
 
     fun colorOf(key: String): Int = when (key) {
