@@ -327,7 +327,8 @@ class OverlayService : Service() {
         val s = markers[sKey]
         val pk = markers[pKey]
         if (s == null || pk == null) {
-            t.strikerPath = emptyList(); t.coinPath = emptyList(); t.pocket = null
+            t.strikerPath = emptyList(); t.coinPath = emptyList()
+            t.strikerAfter = emptyList(); t.pocket = null
             t.invalidate()
             return
         }
@@ -340,13 +341,14 @@ class OverlayService : Service() {
         val coins = if (t600 != null)
             listOf(Predictor.Coin(t600.first, t600.second, "white"))
         else emptyList()
-        val (sPath, _, cPath) = Predictor.predictPath(s600, rad, coins)
-        t.strikerPath = sPath.map { toScreen(it) }
-        t.coinPath = cPath.map { toScreen(it) }
+        val res = Predictor.predictPath(s600, rad, coins)
+        t.strikerPath = res.strikerPath.map { toScreen(it) }
+        t.coinPath = res.coinPath.map { toScreen(it) }
+        t.strikerAfter = res.strikerAfter.map { toScreen(it) }
         t.pocket = null
         val scale = box.width() / 600f
         val r = Predictor.POCKET_RADIUS * 1.5f * scale
-        for (pt in t.coinPath + t.strikerPath) {
+        for (pt in t.coinPath + t.strikerPath + t.strikerAfter) {
             if (hypot((pt.x - pk.x).toDouble(), (pt.y - pk.y).toDouble()) < r) {
                 t.pocket = pk
                 break

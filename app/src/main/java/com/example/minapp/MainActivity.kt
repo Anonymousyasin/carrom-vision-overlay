@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import rikka.shizuku.Shizuku
 
@@ -27,6 +28,15 @@ class MainActivity : AppCompatActivity() {
                 if (grantResult == PackageManager.PERMISSION_GRANTED) "Shizuku granted"
                 else "Shizuku denied",
             )
+        }
+
+    private val pickImage =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) {
+                startActivity(
+                    Intent(this, AnalyzerActivity::class.java).putExtra("uri", uri),
+                )
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,6 +66,7 @@ class MainActivity : AppCompatActivity() {
             addView(btn("1. Grant overlay permission") { askOverlayPermission() })
             addView(btn("2. Request Shizuku permission") { ShizukuCap.requestPermission(100); })
             addView(btn("3. Start overlay over Carrom Pool") { startOverlay() })
+            addView(btn("4. Analyze screenshot (accurate)") { pickImage.launch("image/*") })
             addView(btn("Stop overlay") { stopService(Intent(this@MainActivity, OverlayService::class.java)) })
             addView(btn("Offline demo predict") { demo() })
             addView(statusDemo)

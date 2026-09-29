@@ -20,6 +20,7 @@ class TableView(context: Context) : View(context) {
     var markers: Map<String, PointF> = emptyMap()
     var strikerPath: List<PointF> = emptyList()
     var coinPath: List<PointF> = emptyList()
+    var strikerAfter: List<PointF> = emptyList()
     var pocket: PointF? = null
     var boxAdjust = false
     var sideMe = true
@@ -39,6 +40,10 @@ class TableView(context: Context) : View(context) {
     }
     private val coinLine = Paint().apply {
         color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 6f; isAntiAlias = true
+    }
+    private val afterPaint = Paint().apply {
+        color = Color.CYAN; style = Paint.Style.STROKE; strokeWidth = 4f
+        pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f); isAntiAlias = true
     }
     private val dotPaint = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true }
     private val ringPaint = Paint().apply {
@@ -93,6 +98,14 @@ class TableView(context: Context) : View(context) {
             canvas.drawLine(
                 coinPath[i].x, coinPath[i].y,
                 coinPath[i + 1].x, coinPath[i + 1].y, coinLine,
+            )
+        }
+        // striker deflection after contact (thinner, same cyan)
+        afterPaint.strokeWidth = 4f
+        for (i in 0 until strikerAfter.size - 1) {
+            canvas.drawLine(
+                strikerAfter[i].x, strikerAfter[i].y,
+                strikerAfter[i + 1].x, strikerAfter[i + 1].y, afterPaint,
             )
         }
         pocket?.let {
