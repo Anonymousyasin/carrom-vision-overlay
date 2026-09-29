@@ -9,13 +9,13 @@ import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var overlay: OverlayView
+    private lateinit var boardView: OverlayView
     private lateinit var status: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        overlay = OverlayView(this).apply {
+        boardView = OverlayView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
             )
@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             addView(status)
             addView(btn)
-            addView(overlay)
+            addView(this@MainActivity.boardView)
         }
         setContentView(root)
         runPrediction()
@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
     private fun runPrediction() {
         val (striker, coins) = Predictor.demoState()
         val pred = Predictor.fullPrediction(striker, coins)
-        overlay.update(striker, coins, pred)
+        boardView.update(striker, coins, pred)
         status.text = pred.best?.let {
             "BEST: ${it.reason} angle=${"%.1f".format(it.angleDeg)} (0=up,90=right) score=${"%.3f".format(it.score)}"
         } ?: "No clean pot found"
