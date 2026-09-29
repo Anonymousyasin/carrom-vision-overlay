@@ -122,11 +122,19 @@ object Predictor {
             val sPath = mutableListOf(striker)
             var pos = striker
             var ang = angle
+            var done = false
             repeat(maxRebounds + 1) {
+                if (done) return@repeat
                 val (hit, wall) = rayToWall(pos, ang)
-                if (hit == null) return@repeat
+                if (hit == null) {
+                    done = true
+                    return@repeat
+                }
                 sPath.add(hit)
-                if (pocketHit(hit)) return@repeat
+                if (pocketHit(hit)) {
+                    done = true
+                    return@repeat
+                }
                 pos = hit; ang = reflect(ang, wall)
             }
             return Paths(sPath, null, emptyList(), emptyList())
@@ -139,16 +147,38 @@ object Predictor {
         val nl = hypot(nx.toDouble(), ny.toDouble()).toFloat().coerceAtLeast(1e-6f)
         nx /= nl; ny /= nl
 
-        // coin path from coin center along N
+        // coin path from coin center along N — pockets race cushions:
+        // a coin aimed at a pocket mouth falls in WITHOUT touching a wall
         val cAngle = atan2(ny.toDouble(), nx.toDouble()).toFloat()
         val cPath = mutableListOf(best.x to best.y)
         var cp = best.x to best.y
         var ca = cAngle
+        var potted = false
         repeat(maxRebounds + 1) {
+            if (potted) return@repeat
+            val cdx = cos(ca.toDouble()).toFloat()
+            val cdy = sin(ca.toDouble()).toFloat()
+            var potT = Float.MAX_VALUE
+            var potI = -1
+            for ((i, p) in pockets.withIndex()) {
+                val t = rayHitCircle(cp.first, cp.second, cdx, cdy, p.first, p.second, prAt(i) * 1.5f)
+                if (t != null && t < potT) {
+                    potT = t; potI = i
+                }
+            }
             val (hit, wall) = rayToWall(cp, ca)
+            val wallT = if (hit == null) Float.MAX_VALUE else dist(cp, hit)
+            if (potI >= 0 && potT < wallT) {
+                cPath.add(pockets[potI]) // straight in — ends at pocket center
+                potted = true
+                return@repeat
+            }
             if (hit == null) return@repeat
             cPath.add(hit)
-            if (pocketHit(hit)) return@repeat
+            if (pocketHit(hit)) {
+                potted = true
+                return@repeat
+            }
             cp = hit; ca = reflect(ca, wall)
         }
 
