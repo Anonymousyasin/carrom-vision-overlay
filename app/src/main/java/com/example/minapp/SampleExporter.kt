@@ -1,16 +1,20 @@
 package com.example.minapp
 
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PointF
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -20,29 +24,165 @@ import kotlin.math.hypot
 import kotlin.math.sqrt
 
 /**
- * v8 training-sample exporter. One analyzer session -> schema-v1 sample:
- * full screenshot + 640px board crop + shot_NNNN.json (positions of ALL
- * pieces in full_px / crop_n / board600 frames, radii, occlusion, pockets,
- * game state, quality, provenance). See plan-doc schema v1.
+ * v9 training-sample exporter. Samples live in PUBLIC Download/CarromSamples/
+ * via MediaStore (visible in Files/USB/share sheets — no more locked
+ * Android/data path). One session -> schema-v1 JSON + full shot + 640 crop,
+ * with TRUE tapped radii for every piece.
  */
 object SampleExporter {
 
     const val SCHEMA = 1
     const val CROP_OUT = 640
+    const val REL_PATH = "Download/CarromSamples/"
 
-    fun dir(ctx: Context): File = File(ctx.getExternalFilesDir(null), "samples")
+    data class InCoin(val p: PointF, val type: String, val rImg: Float)
 
-    fun count(ctx: Context): Int =
-        dir(ctx).listFiles { f -> f.name.endsWith(".json") }?.size ?: 0
+    data class Sample(val id: String, val dateS: Long)
 
-    data class InCoin(val p: PointF, val type: String)
+    private fun downloads(): Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+
+    fun count(ctx: Context): Int {
+        return try {
+            ctx.contentResolver.query(
+                downloads(),
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME} LIKE 'shot_%.json'",
+                null, null,
+            )?.use { it.count } ?: 0
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    fun list(ctx: Context): List<Sample> {
+        val out = mutableListOf<Sample>()
+        try {
+            ctx.contentResolver.query(
+                downloads(),
+                arrayOf(
+                    MediaStore.Downloads.DISPLAY_NAME,
+                    MediaStore.Downloads.DATE_ADDED,
+                ),
+                "${MediaStore.Downloads.DISPLAY_NAME} LIKE 'shot_%.json'",
+                null,
+                "${MediaStore.Downloads.DATE_ADDED} DESC",
+            )?.use { c ->
+                val ni = c.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
+                val di = c.getColumnIndexOrThrow(MediaStore.Downloads.DATE_ADDED)
+                while (c.moveToNext()) {
+                    out.add(Sample(c.getString(ni).removeSuffix(".json"), c.getLong(di)))
+                }
+            }
+        } catch (_: Exception) { }
+        return out
+    }
+
+    fun readJson(ctx: Context, id: String): String? {
+        return try {
+            findUri(ctx, "$id.json")?.let { uri ->
+                ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun delete(ctx: Context, id: String): Boolean {
+        var ok = true
+        for (name in listOf("$id.json", "$id.jpg", "$id-full.jpg")) {
+            try {
+                findUri(ctx, name)?.let { ctx.contentResolver.delete(it, null, null) }
+            } catch (_: Exception) {
+                ok = false
+            }
+        }
+        return ok
+    }
+
+    /** Share one sample (3 files) or all samples. */
+    fun share(ctx: Context, id: String?) {
+        try {
+            val uris = ArrayList<Uri>()
+            val names = if (id != null) {
+                listOf("$id.json", "$id.jpg", "$id-full.jpg")
+            } else {
+                list(ctx).flatMap { listOf("${it.id}.json", "${it.id}.jpg", "${it.id}-full.jpg") }
+            }
+            for (n in names) findUri(ctx, n)?.let { uris.add(it) }
+            if (uris.isEmpty()) return
+            val i = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            ctx.startActivity(Intent.createChooser(i, "Share samples"))
+        } catch (_: Exception) { }
+    }
+
+    private fun findUri(ctx: Context, name: String): Uri? {
+        return try {
+            ctx.contentResolver.query(
+                downloads(),
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME}=?",
+                arrayOf(name), null,
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    ContentUris.withAppendedId(
+                        downloads(),
+                        c.getLong(c.getColumnIndexOrThrow(MediaStore.Downloads._ID)),
+                    )
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun writePublic(ctx: Context, name: String, mime: String, bytes: ByteArray): Boolean {
+        return try {
+            // replace existing
+            findUri(ctx, name)?.let { ctx.contentResolver.delete(it, null, null) }
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.RELATIVE_PATH, REL_PATH)
+            }
+            val uri = ctx.contentResolver.insert(downloads(), values) ?: return false
+            ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Move legacy private-dir samples (v8) to public folder. Returns moved count. */
+    fun migrateLegacy(ctx: Context): Int {
+        var n = 0
+        try {
+            val legacy = File(ctx.getExternalFilesDir(null), "samples")
+            if (!legacy.isDirectory) return 0
+            for (f in legacy.listFiles() ?: return 0) {
+                val mime = when {
+                    f.name.endsWith(".json") -> "application/json"
+                    else -> "image/jpeg"
+                }
+                if (writePublic(ctx, f.name, mime, f.readBytes())) {
+                    f.delete()
+                    if (f.name.endsWith(".json")) n++
+                }
+            }
+        } catch (_: Exception) { }
+        return n
+    }
 
     /**
      * @param bitmap decoded (possibly sampled) bitmap shown in the analyzer
-     * @param imgScale full_image_px / bitmap_px (1.0 if decoded at full res)
+     * @param imgScale full_image_px / bitmap_px
      * @param box board box in BITMAP pixels
      * @param markers S + P1..P4 in BITMAP pixels
-     * @param coins tapped coins in BITMAP pixels
+     * @param markRadii tapped radii in BITMAP pixels
+     * @param coins tapped coins (true radii, BITMAP pixels)
      * @param best accepted prediction (optional auxiliary label)
      */
     fun export(
@@ -52,26 +192,22 @@ object SampleExporter {
         imgScale: Float,
         box: RectF,
         markers: Map<String, PointF>,
+        markRadii: Map<String, Float>,
         coins: List<InCoin>,
         playWhite: Boolean,
         best: Predictor.Shot?,
     ): String? {
         try {
             if (box.width() < 1f || box.height() < 1f) return null
-            val d = dir(ctx)
-            d.mkdirs()
             val id = "shot_%04d".format(count(ctx) + 1)
 
-            // ---- full image: copy bytes + dims + hash ----
             val fullBytes: ByteArray = ctx.contentResolver.openInputStream(fullUri)
                 ?.use { it.readBytes() } ?: return null
-            File(d, "$id-full.jpg").writeBytes(fullBytes)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(fullBytes, 0, fullBytes.size, bounds)
             val sha1 = MessageDigest.getInstance("SHA-1").digest(fullBytes)
                 .joinToString("") { "%02x".format(it) }
 
-            // ---- crop 640 from the analyzed bitmap, mapped to full-frame box ----
             val fbox = RectF(
                 box.left * imgScale, box.top * imgScale,
                 box.right * imgScale, box.bottom * imgScale,
@@ -86,42 +222,40 @@ object SampleExporter {
                 ),
                 CROP_OUT, CROP_OUT, true,
             )
-            FileOutputStream(File(d, "$id.jpg")).use {
+            val cropBytes = java.io.ByteArrayOutputStream().let {
                 crop.compress(Bitmap.CompressFormat.JPEG, 92, it)
+                it.toByteArray()
             }
             crop.recycle()
 
-            // helpers: bitmap-px -> frames (bitmap is a uniform sample of full)
+            // frames: bitmap-px -> full / crop_n / board600 (uniform sample assumed)
             fun to600(p: PointF) =
                 ((p.x - box.left) / box.width() * 600f) to
                     ((p.y - box.top) / box.height() * 600f)
-            // (p already in bitmap px; full = p * imgScale since bitmap is uniform sample)
             fun fullOf(p: PointF) = (p.x * imgScale) to (p.y * imgScale)
             fun cropN(p: PointF) =
                 ((p.x - box.left) / box.width()) to ((p.y - box.top) / box.height())
-            fun rOut(r600: Float) = r600 / 600f * CROP_OUT
+            fun rOut(rImg: Float) = rImg / box.width() * CROP_OUT
 
-            // ---- coins with occlusion ----
-            val radii = mapOf("black" to 15f, "white" to 15f, "red" to 15f)
-            val coinObjs = coins.mapIndexed { i, c ->
-                val b600 = to600(c.p)
-                val f = fullOf(c.p)
-                val cn = cropN(c.p)
+            val counters = mutableMapOf("black" to 0, "white" to 0, "red" to 0)
+            val coinsArr = JSONArray()
+            val occByIdx = coins.indices.map { i ->
                 var occ = 0
-                for (o in coins) {
-                    if (o === c) continue
-                    val dd = hypot((o.p.x - c.p.x).toDouble(), (o.p.y - c.p.y).toDouble()).toFloat()
-                    val r = radii[c.type] ?: 15f
+                for ((j, o) in coins.withIndex()) {
+                    if (i == j) continue
+                    val dd = hypot(
+                        (o.p.x - coins[i].p.x).toDouble(),
+                        (o.p.y - coins[i].p.y).toDouble(),
+                    ).toFloat()
+                    val r = coins[i].rImg
                     if (dd < 2 * r) {
-                        val pct = circleOverlapPct(r, r, dd)
+                        val pct = circleOverlapPct(r, o.rImg, dd)
                         if (pct > occ) occ = pct.toInt()
                     }
                 }
-                Triple(c, b600, occ)
+                occ
             }
-            val counters = mutableMapOf("black" to 0, "white" to 0, "red" to 0)
-            val coinsArr = JSONArray()
-            for ((c, b600, occ) in coinObjs) {
+            for ((i, c) in coins.withIndex()) {
                 val n = (counters[c.type] ?: 0) + 1
                 counters[c.type] = n
                 val cid = when (c.type) {
@@ -129,20 +263,20 @@ object SampleExporter {
                     "white" -> "W$n"
                     else -> "Q"
                 }
+                val b600 = to600(c.p)
                 val f = fullOf(c.p)
                 val cn = cropN(c.p)
                 coinsArr.put(JSONObject()
                     .put("id", cid)
-                    .put("type", if (c.type == "red") "red" else c.type)
+                    .put("type", c.type)
                     .put("full_px", arr(f.first, f.second))
                     .put("crop_n", arr(cn.first, cn.second))
                     .put("board600", arr(b600.first, b600.second))
-                    .put("r_px", rOut(radii[c.type] ?: 15f))
-                    .put("occluded_pct", occ)
-                    .put("cluster", occ > 0))
+                    .put("r_px", rOut(c.rImg))
+                    .put("occluded_pct", occByIdx[i])
+                    .put("cluster", occByIdx[i] > 0))
             }
 
-            // ---- pockets: nearest ideal corner, unique ----
             val ideals = listOf(
                 "TL" to (50f to 50f), "TR" to (550f to 50f),
                 "BL" to (50f to 550f), "BR" to (550f to 550f),
@@ -169,11 +303,10 @@ object SampleExporter {
                     .put("corner", corner)
                     .put("full_px", arr(f.first, f.second))
                     .put("crop_n", arr(cn.first, cn.second))
-                    .put("r_px", rOut(25f))
+                    .put("r_px", rOut(markRadii[key] ?: (box.width() * 25f / 600f)))
                     .put("mine", false))
             }
 
-            // ---- striker ----
             val sObj = markers["S"]?.let { m ->
                 val b600 = to600(m)
                 val f = fullOf(m)
@@ -183,14 +316,13 @@ object SampleExporter {
                     .put("full_px", arr(f.first, f.second))
                     .put("crop_n", arr(cn.first, cn.second))
                     .put("board600", arr(b600.first, b600.second))
-                    .put("r_px", rOut(20f))
+                    .put("r_px", rOut(markRadii["S"] ?: (box.width() * 20f / 600f)))
                     .put("state", "placed")
             }
 
             val nBlack = counters["black"] ?: 0
             val nWhite = counters["white"] ?: 0
             val nRed = counters["red"] ?: 0
-            val anyCluster = coinObjs.any { it.third > 0 }
 
             val root = JSONObject()
                 .put("schema", SCHEMA)
@@ -228,7 +360,7 @@ object SampleExporter {
                 .put("blur", 0)
                 .put("glare", false)
                 .put("screenshot", true)
-                .put("overlapping_cluster", anyCluster))
+                .put("overlapping_cluster", occByIdx.any { it > 0 }))
                 .put("provenance", JSONObject()
                     .put("taps", "manual")
                     .put("model_assist", false)
@@ -241,7 +373,9 @@ object SampleExporter {
                     .put("angle_deg", best.angleDeg)
                     .put("score", best.score))
             }
-            File(d, "$id.json").writeText(root.toString(1))
+            if (!writePublic(ctx, "$id.json", "application/json", root.toString(1).toByteArray())) return null
+            if (!writePublic(ctx, "$id.jpg", "image/jpeg", cropBytes)) return null
+            if (!writePublic(ctx, "$id-full.jpg", "image/jpeg", fullBytes)) return null
             return id
         } catch (_: Exception) {
             return null
@@ -265,4 +399,8 @@ object SampleExporter {
         )
         return a / (Math.PI * r0 * r0) * 100.0
     }
+
+    @Suppress("unused")
+    private fun downloadsPathHint(): String =
+        "${Environment.DIRECTORY_DOWNLOADS}/CarromSamples/"
 }

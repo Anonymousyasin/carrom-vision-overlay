@@ -18,7 +18,7 @@ object Predictor {
         Pair(BOARD_SIZE - BOARD_PADDING, BOARD_SIZE - BOARD_PADDING),
     )
 
-    data class Coin(val x: Float, val y: Float, val type: String)
+    data class Coin(val x: Float, val y: Float, val type: String, val r: Float = COIN_RADIUS)
     data class Shot(
         val targetX: Float, val targetY: Float,
         val ghostX: Float, val ghostY: Float,
@@ -91,14 +91,19 @@ object Predictor {
         striker: Pair<Float, Float>, angle: Float,
         coins: List<Coin>, maxRebounds: Int = 1,
         pockets: List<Pair<Float, Float>> = POCKETS,
+        strikerR: Float = STRIKER_RADIUS,
+        pocketRadii: List<Float>? = null,
     ): Paths {
+        fun prAt(i: Int) = pocketRadii?.getOrNull(i) ?: POCKET_RADIUS
+        fun pocketHit(pt: Pair<Float, Float>): Boolean =
+            pockets.indices.any { dist(pt, pockets[it]) < prAt(it) * 1.5f }
         val dx = cos(angle.toDouble()).toFloat()
         val dy = sin(angle.toDouble()).toFloat()
-        val rHit = COIN_RADIUS + STRIKER_RADIUS
 
         var best: Coin? = null
         var bestT = Float.MAX_VALUE
         for (c in coins) {
+            val rHit = strikerR + c.r
             val ox = c.x - striker.first
             val oy = c.y - striker.second
             val tca = ox * dx + oy * dy
@@ -121,9 +126,7 @@ object Predictor {
                 val (hit, wall) = rayToWall(pos, ang)
                 if (hit == null) return@repeat
                 sPath.add(hit)
-                var pocketed = false
-                for (p in pockets) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
-                if (pocketed) return@repeat
+                if (pocketHit(hit)) return@repeat
                 pos = hit; ang = reflect(ang, wall)
             }
             return Paths(sPath, null, emptyList(), emptyList())
@@ -145,9 +148,7 @@ object Predictor {
             val (hit, wall) = rayToWall(cp, ca)
             if (hit == null) return@repeat
             cPath.add(hit)
-            var pocketed = false
-            for (p in pockets) if (dist(hit, p) < POCKET_RADIUS * 1.5f) { pocketed = true; break }
-            if (pocketed) return@repeat
+            if (pocketHit(hit)) return@repeat
             cp = hit; ca = reflect(ca, wall)
         }
 
@@ -160,7 +161,7 @@ object Predictor {
         if (vl > 0.15f) {
             vx /= vl; vy /= vl
             // roll-out ~7 coin radii, with one cushion bounce
-            val rollLen = COIN_RADIUS * 7f
+            val rollLen = best.r * 7f
             val endX = contact.first + vx * rollLen
             val endY = contact.second + vy * rollLen
             val lo = BOARD_PADDING
@@ -246,7 +247,9 @@ object Predictor {
         coins: List<Coin>,
         playWhite: Boolean = true,
         pockets: List<Pair<Float, Float>> = POCKETS,
-    ): Shot? = topShots(striker, coins, playWhite, pockets, 1).firstOrNull()
+        strikerR: Float = STRIKER_RADIUS,
+        pocketRadii: List<Float>? = null,
+    ): Shot? = topShots(striker, coins, playWhite, pockets, 1, strikerR, pocketRadii).firstOrNull()
 
     /** Ranked ghost-ball search over [pockets] (tapped ground truth, not ideals).
      *  Every candidate is FULLY SIMULATED: first contact must be the target,
@@ -257,14 +260,17 @@ object Predictor {
         playWhite: Boolean = true,
         pockets: List<Pair<Float, Float>> = POCKETS,
         n: Int = 3,
+        strikerR: Float = STRIKER_RADIUS,
+        pocketRadii: List<Float>? = null,
     ): List<Shot> {
+        fun prAt(i: Int) = pocketRadii?.getOrNull(i) ?: POCKET_RADIUS
         val mine = if (playWhite) "white" else "black"
         val out = mutableListOf<Shot>()
         var blocked = 0
         var evaluated = 0
         for (c in coins) {
             if (c.type != mine && c.type != "red") continue
-            for (p in pockets) {
+            for ((pi, p) in pockets.withIndex()) {
                 evaluated++
                 val ddx = p.first - c.x
                 val ddy = p.second - c.y
@@ -273,8 +279,9 @@ object Predictor {
                     blocked++
                     continue
                 }
-                val gx = c.x - ddx / dlen * 2 * COIN_RADIUS
-                val gy = c.y - ddy / dlen * 2 * COIN_RADIUS
+                val reach = c.r + strikerR
+                val gx = c.x - ddx / dlen * reach
+                val gy = c.y - ddy / dlen * reach
                 val ghost = gx to gy
                 val sdx = gx - striker.first
                 val sdy = gy - striker.second
@@ -283,10 +290,10 @@ object Predictor {
                     blocked++
                     continue
                 }
-                // 1) striker disc (R20) vs coins (R15): sweep radius 35
+                // 1) striker disc vs coins: sweep radius strikerR + coinR
                 val margin = sweepMargin(
                     striker, ghost, coins, c,
-                    STRIKER_RADIUS + COIN_RADIUS,
+                    strikerR + COIN_RADIUS,
                 )
                 if (margin < 0) {
                     blocked++
@@ -300,7 +307,7 @@ object Predictor {
                 }
                 val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
                 // 2) simulate the REAL shot: first contact must be the target
-                val sim = predictPath(striker, rad, coins, 1, pockets)
+                val sim = predictPath(striker, rad, coins, 1, pockets, strikerR, pocketRadii)
                 if (sim.hit !== c) {
                     blocked++
                     continue
@@ -309,7 +316,7 @@ object Predictor {
                 var legsClear = true
                 val legs = sim.coinPath.zipWithNext()
                 for ((a, b) in legs) {
-                    if (sweepMargin(a, b, coins, c, COIN_RADIUS * 2) < 0) {
+                    if (sweepMargin(a, b, coins, c, c.r * 2) < 0) {
                         legsClear = false
                         break
                     }
@@ -319,7 +326,7 @@ object Predictor {
                     continue
                 }
                 // 4) coin must actually finish in THIS pocket
-                val endOk = sim.coinPath.lastOrNull()?.let { dist(it, p) < POCKET_RADIUS * 1.5f } == true
+                val endOk = sim.coinPath.lastOrNull()?.let { dist(it, p) < prAt(pi) * 1.5f } == true
                 if (!endOk) {
                     blocked++
                     continue
@@ -332,7 +339,7 @@ object Predictor {
                 score *= 1f + margin.coerceAtMost(30f) / 150f
                 // 5) scratch penalty: striker deflection falls in any pocket
                 for (pt in sim.strikerAfter.drop(1)) {
-                    if (pockets.any { dist(pt, it) < POCKET_RADIUS * 1.2f }) {
+                    if (pockets.indices.any { dist(pt, pockets[it]) < prAt(it) * 1.2f }) {
                         score *= 0.4f
                         break
                     }
@@ -354,13 +361,21 @@ object Predictor {
         coins: List<Coin>,
         playWhite: Boolean = true,
         pockets: List<Pair<Float, Float>> = POCKETS,
+        strikerR: Float = STRIKER_RADIUS,
+        pocketRadii: List<Float>? = null,
     ): Prediction {
-        val best = bestShot(striker, coins, playWhite, pockets)
+        val best = bestShot(striker, coins, playWhite, pockets, strikerR, pocketRadii)
         val angle = best?.angleRad ?: (-Math.PI / 2).toFloat()
-        val res = predictPath(striker, angle, coins, 1, pockets)
+        val res = predictPath(striker, angle, coins, 1, pockets, strikerR, pocketRadii)
+        fun prAt(i: Int) = pocketRadii?.getOrNull(i) ?: POCKET_RADIUS
         var pocket: Pair<Float, Float>? = null
         for (p in res.coinPath + res.strikerPath + res.strikerAfter) {
-            for (pk in pockets) if (dist(p, pk) < POCKET_RADIUS * 1.5f) { pocket = pk; break }
+            for ((i, pk) in pockets.withIndex()) {
+                if (dist(p, pk) < prAt(i) * 1.5f) {
+                    pocket = pk
+                    break
+                }
+            }
         }
         return Prediction(res.strikerPath, res.hit, res.coinPath, pocket, best)
     }
@@ -370,12 +385,14 @@ object Predictor {
         striker: Pair<Float, Float>,
         target: Pair<Float, Float>,
         pocket: Pair<Float, Float>,
+        rT: Float = COIN_RADIUS,
+        rS: Float = STRIKER_RADIUS,
     ): Triple<Float, Float, Float> {
         val pdx = pocket.first - target.first
         val pdy = pocket.second - target.second
         val plen = hypot(pdx.toDouble(), pdy.toDouble()).toFloat()
-        val gx = target.first - pdx / plen * 2 * COIN_RADIUS
-        val gy = target.second - pdy / plen * 2 * COIN_RADIUS
+        val gx = target.first - pdx / plen * (rT + rS)
+        val gy = target.second - pdy / plen * (rT + rS)
         val sdx = gx - striker.first
         val sdy = gy - striker.second
         val slen = hypot(sdx.toDouble(), sdy.toDouble()).toFloat().coerceAtLeast(1e-6f)

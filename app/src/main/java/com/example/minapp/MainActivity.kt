@@ -25,7 +25,33 @@ class MainActivity : AppCompatActivity() {
 
     private fun samplesText(): String {
         val n = SampleExporter.count(this)
-        return "Training samples: $n (tap for folder)"
+        return "Training samples: $n in Download/CarromSamples (tap to browse)"
+    }
+
+    private fun browseSamples() {
+        val items = SampleExporter.list(this)
+        if (items.isEmpty()) {
+            toast("No samples yet — analyze + Save one")
+            return
+        }
+        val names = items.map { it.id }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Samples (${items.size})")
+            .setItems(names) { _, which ->
+                val id = names[which]
+                val js = SampleExporter.readJson(this, id) ?: "unreadable"
+                android.app.AlertDialog.Builder(this)
+                    .setTitle(id)
+                    .setMessage(js.take(2000))
+                    .setPositiveButton("Share") { _, _ -> SampleExporter.share(this, id) }
+                    .setNegativeButton("Delete") { _, _ ->
+                        SampleExporter.delete(this, id)
+                        samplesView.text = samplesText()
+                    }
+                    .setNeutralButton("Close", null)
+                    .show()
+            }
+            .show()
     }
 
     private fun isWhite(): Boolean =
@@ -96,11 +122,20 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(context).apply {
                 textSize = 14f; gravity = Gravity.CENTER
                 text = samplesText()
-                setOnClickListener { toast(SampleExporter.dir(this@MainActivity).absolutePath) }
+                setOnClickListener { browseSamples() }
             }.also { samplesView = it })
+            addView(btn("Share all samples") { SampleExporter.share(this@MainActivity, null) })
             })
         }
         setContentView(root)
+
+        Thread {
+            val moved = SampleExporter.migrateLegacy(this)
+            runOnUiThread {
+                if (moved > 0) toast("Moved $moved old samples to Download/CarromSamples")
+                if (::samplesView.isInitialized) samplesView.text = samplesText()
+            }
+        }.start()
 
         Shizuku.addRequestPermissionResultListener(shizukuListener)
         if (Build.VERSION.SDK_INT >= 33) {

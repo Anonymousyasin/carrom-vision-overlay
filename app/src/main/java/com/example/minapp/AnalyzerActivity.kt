@@ -112,6 +112,8 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
             addView(row(
                 sideBtn,
+                sbtn("R−") { view.adjustSelected(0.9f) },
+                sbtn("R+") { view.adjustSelected(1.1f) },
                 sbtn("Aim−") { aimDeg = (aimDeg - 2f + 360f) % 360f; manualAim = true; refresh(null) },
                 sbtn("Aim+") { aimDeg = (aimDeg + 2f) % 360f; manualAim = true; refresh(null) },
                 saveBtn,
@@ -205,15 +207,32 @@ class AnalyzerActivity : AppCompatActivity() {
     private fun undoStep() {
         when (step) {
             Step.BLACK -> view.coins.indexOfLast { it.type == "black" }
-                .takeIf { it >= 0 }?.let { view.coins.removeAt(it) }
+                .takeIf { it >= 0 }?.let {
+                    view.coins.removeAt(it)
+                    if (view.selCoin == it) view.selCoin = -1
+                }
             Step.WHITE -> view.coins.indexOfLast { it.type == "white" }
-                .takeIf { it >= 0 }?.let { view.coins.removeAt(it) }
+                .takeIf { it >= 0 }?.let {
+                    view.coins.removeAt(it)
+                    if (view.selCoin == it) view.selCoin = -1
+                }
             Step.QUEEN -> view.coins.indexOfLast { it.type == "red" }
-                .takeIf { it >= 0 }?.let { view.coins.removeAt(it) }
-            Step.STRIKER -> view.markers.remove("S")
+                .takeIf { it >= 0 }?.let {
+                    view.coins.removeAt(it)
+                    if (view.selCoin == it) view.selCoin = -1
+                }
+            Step.STRIKER -> {
+                view.markers.remove("S")
+                view.markRadii.remove("S")
+                if (view.selMark == "S") view.selMark = null
+            }
             Step.POCKETS -> {
                 val last = view.markers.keys.filter { it.startsWith("P") }.maxOrNull()
-                last?.let { view.markers.remove(it) }
+                last?.let {
+                    view.markers.remove(it)
+                    view.markRadii.remove(it)
+                    if (view.selMark == it) view.selMark = null
+                }
             }
             else -> { }
         }
@@ -227,11 +246,19 @@ class AnalyzerActivity : AppCompatActivity() {
             Step.BLACK -> view.coins.removeAll { it.type == "black" }
             Step.WHITE -> view.coins.removeAll { it.type == "white" }
             Step.QUEEN -> view.coins.removeAll { it.type == "red" }
-            Step.STRIKER -> view.markers.remove("S")
+            Step.STRIKER -> {
+                view.markers.remove("S")
+                view.markRadii.remove("S")
+            }
             Step.POCKETS -> view.markers.keys.filter { it.startsWith("P") }
-                .forEach { view.markers.remove(it) }
+                .forEach {
+                    view.markers.remove(it)
+                    view.markRadii.remove(it)
+                }
             else -> { }
         }
+        view.selCoin = -1
+        view.selMark = null
         refresh(null)
         view.invalidate()
         applyStep()
@@ -262,6 +289,23 @@ class AnalyzerActivity : AppCompatActivity() {
             ((p.y - b.top) / b.height() * 600f)
     }
 
+    private fun r600(rImg: Float): Float = rImg / view.box.width() * 600f
+
+    private fun strikerR600(): Float =
+        view.markRadii["S"]?.let { r600(it) } ?: Predictor.STRIKER_RADIUS
+
+    private fun pockets600(): List<Pair<Float, Float>> {
+        val tapped = view.markers.keys.filter { it.startsWith("P") }.sorted()
+            .map { to600(view.markers[it]!!) }
+        return tapped.ifEmpty { Predictor.POCKETS }
+    }
+
+    private fun pocketRadii600(): List<Float>? {
+        val keys = view.markers.keys.filter { it.startsWith("P") }.sorted()
+        if (keys.isEmpty()) return null
+        return keys.map { r600(view.markR(it)) }
+    }
+
     private fun toImage(p: Pair<Float, Float>): PointF {
         val b = view.box
         return PointF(
@@ -270,18 +314,12 @@ class AnalyzerActivity : AppCompatActivity() {
         )
     }
 
-    private fun pockets600(): List<Pair<Float, Float>> {
-        val tapped = view.markers.keys.filter { it.startsWith("P") }.sorted()
-            .map { to600(view.markers[it]!!) }
-        return tapped.ifEmpty { Predictor.POCKETS }
-    }
-
     private fun refresh(msg: String?) {
         if (msg != null) hint.text = msg
         val s = view.markers["S"]
-        val coins600 = view.coins.map {
-            val q = to600(it.p)
-            Predictor.Coin(q.first, q.second, it.type)
+        val coins600 = view.coins.mapIndexed { i, c ->
+            val q = to600(c.p)
+            Predictor.Coin(q.first, q.second, c.type, r600(view.coinR(i)))
         }
         if (s == null || coins600.isEmpty()) {
             view.strikerPath = emptyList()
@@ -297,24 +335,25 @@ class AnalyzerActivity : AppCompatActivity() {
         val mine = if (playWhite) "white" else "black"
         val playable = coins600.filter { it.type == mine || it.type == "red" }
         val pkts = pockets600()
+        val pktR = pocketRadii600()
+        val sr = strikerR600()
         lastShots = if (playable.isNotEmpty()) {
-            Predictor.topShots(s600, playable, playWhite, pkts, 3)
+            Predictor.topShots(s600, playable, playWhite, pkts, 3, sr, pktR)
         } else emptyList()
         val shot = lastShots.getOrNull(selectedCard) ?: lastShots.firstOrNull()
         if (shot != null && !manualAim) aimDeg = shot.angleDeg
         val rad = Math.toRadians((aimDeg - 90).toDouble()).toFloat()
-        val res = Predictor.predictPath(s600, rad, coins600, 1, pkts)
+        val res = Predictor.predictPath(s600, rad, coins600, 1, pkts, sr, pktR)
         view.strikerPath = res.strikerPath.map { toImage(it) }
         view.coinPath = res.coinPath.map { toImage(it) }
         view.strikerAfter = res.strikerAfter.map { toImage(it) }
         view.bestTarget = shot?.let { toImage(it.targetX to it.targetY) }
         view.pocket = null
-        val scale = view.box.width() / 600f
-        val r = Predictor.POCKET_RADIUS * 1.5f * scale
-        val tappedP = view.markers.keys.filter { it.startsWith("P") }.map { view.markers[it]!! }
-        outer@ for (pk in tappedP) {
+        val tappedP = view.markers.keys.filter { it.startsWith("P") }.sorted()
+            .map { view.markers[it]!! to view.markR(it) }
+        outer@ for ((pk, pr) in tappedP) {
             for (pt in view.coinPath + view.strikerPath + view.strikerAfter) {
-                if (hypot((pt.x - pk.x).toDouble(), (pt.y - pk.y).toDouble()) < r) {
+                if (hypot((pt.x - pk.x).toDouble(), (pt.y - pk.y).toDouble()) < pr * 1.5f) {
                     view.pocket = pk
                     break@outer
                 }
@@ -388,7 +427,10 @@ class AnalyzerActivity : AppCompatActivity() {
             val scale = if (bm.width > 0 && fullW > 0) fullW.toFloat() / bm.width else 1f
             val id = SampleExporter.export(
                 this, uri, bm, scale, view.box, view.markers.toMap(),
-                view.coins.map { SampleExporter.InCoin(PointF(it.p.x, it.p.y), it.type) },
+                view.markRadii.toMap(),
+                view.coins.mapIndexed { i, c ->
+                    SampleExporter.InCoin(PointF(c.p.x, c.p.y), c.type, view.coinR(i))
+                },
                 playWhite,
                 lastShots.getOrNull(selectedCard),
             )

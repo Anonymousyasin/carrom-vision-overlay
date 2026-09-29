@@ -25,9 +25,15 @@ class AnalyzerView(context: Context) : View(context) {
     var box = RectF()
     var boxInitDone = false
     val markers = mutableMapOf<String, PointF>() // S, P1..P4 (image px)
+    /** Tapped radii, image px. Defaults set at placement from box scale. */
+    val markRadii = mutableMapOf<String, Float>()
     val coins = mutableListOf<CoinMark>() // image px, type locked by wizard step
 
-    data class CoinMark(val p: PointF, val type: String)
+    data class CoinMark(val p: PointF, val type: String, var r: Float = 0f)
+
+    /** Selection for resize: coin index or named marker key. */
+    var selCoin = -1
+    var selMark: String? = null
 
     var activeMark: String? = null // BOX, BLACK, WHITE, QUEEN, S, POCKET
     var onChanged: (() -> Unit)? = null
@@ -61,6 +67,55 @@ class AnalyzerView(context: Context) : View(context) {
     fun toImage(vx: Float, vy: Float): PointF =
         PointF((vx - baseX - panX) / totalScale(), (vy - baseY - panY) / totalScale())
 
+    /** Default radius for a piece kind, image px (from box scale). */
+    fun defaultR(kind: String): Float = when (kind) {
+        "S" -> box.width() * 20f / 600f
+        "P" -> box.width() * 25f / 600f
+        else -> box.width() * 15f / 600f
+    }
+
+    fun coinR(i: Int): Float =
+        coins.getOrNull(i)?.let { if (it.r > 0f) it.r else defaultR("C") }
+            ?: defaultR("C")
+
+    fun markR(key: String): Float =
+        markRadii[key] ?: defaultR(if (key == "S") "S" else "P")
+
+    /** Stepper fallback: grow/shrink selected circle. */
+    fun adjustSelected(factor: Float) {
+        val lo = box.width() * 5f / 600f
+        val hi = box.width() * 60f / 600f
+        if (selCoin >= 0 && selCoin < coins.size) {
+            val c = coins[selCoin]
+            c.r = ((if (c.r > 0f) c.r else defaultR("C")) * factor).coerceIn(lo, hi)
+        } else if (selMark != null) {
+            markRadii[selMark!!] = (markR(selMark!!) * factor).coerceIn(lo, hi)
+        }
+        onChanged?.invoke()
+        invalidate()
+    }
+
+    /** Circle under point: coin index (-1) + marker key (null). */
+    private fun circleAt(ip: PointF): Pair<Int, String?> {
+        val tol = 70f / totalScale()
+        var bestD = Float.MAX_VALUE
+        var bi = -1
+        var bk: String? = null
+        for ((i, c) in coins.withIndex()) {
+            val d = hypot((ip.x - c.p.x).toDouble(), (ip.y - c.p.y).toDouble()).toFloat()
+            if (d < coinR(i) + tol && d < bestD) {
+                bestD = d; bi = i; bk = null
+            }
+        }
+        for ((k, m) in markers) {
+            val d = hypot((ip.x - m.x).toDouble(), (ip.y - m.y).toDouble()).toFloat()
+            if (d < markR(k) + tol && d < bestD) {
+                bestD = d; bi = -1; bk = k
+            }
+        }
+        return bi to bk
+    }
+
     fun resetZoom() {
         zoom = 1f; panX = 0f; panY = 0f
         invalidate()
@@ -74,6 +129,9 @@ class AnalyzerView(context: Context) : View(context) {
     private var lastX = 0f
     private var lastY = 0f
     private var boxDrag = 0 // 1 move, 2 resize
+    private var grabKind = 0 // 0 none, 1 move circle, 2 resize circle
+    private var grabCoin = -1
+    private var grabMark: String? = null
     private var pinchStart = 0f
     private var zoomStart = 1f
     private var focusX = 0f
@@ -88,6 +146,7 @@ class AnalyzerView(context: Context) : View(context) {
                     downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
                     downT = e.eventTime
                     mode = 1
+                    grabKind = 0; grabCoin = -1; grabMark = null
                     if (activeMark == "BOX") {
                         val ip = toImage(e.x, e.y)
                         val tol = 70f / totalScale()
@@ -96,6 +155,25 @@ class AnalyzerView(context: Context) : View(context) {
                                 (ip.y - box.bottom).toDouble(),
                             ) < tol
                         ) 2 else 1
+                    } else {
+                        // grab existing circle? (move inside, resize on ring)
+                        val ip = toImage(e.x, e.y)
+                        val (ci, mk) = circleAt(ip)
+                        if (ci >= 0 || mk != null) {
+                            val (cx, cy, rr) = if (ci >= 0) {
+                                Triple(coins[ci].p.x, coins[ci].p.y, coinR(ci))
+                            } else {
+                                val m = markers[mk]!!
+                                Triple(m.x, m.y, markR(mk!!))
+                            }
+                            val d = hypot(
+                                (ip.x - cx).toDouble(),
+                                (ip.y - cy).toDouble(),
+                            ).toFloat()
+                            grabKind = if (d > rr * 0.7f) 2 else 1
+                            grabCoin = ci
+                            grabMark = mk
+                        }
                     }
                     true
                 }
@@ -146,6 +224,11 @@ class AnalyzerView(context: Context) : View(context) {
                                 val b = toImage(e.x, e.y)
                                 moveBox(b.x - a.x, b.y - a.y, boxDrag == 2, bm)
                                 lastX = e.x; lastY = e.y
+                                onChanged?.invoke()
+                            } else if (grabKind != 0) {
+                                // circle move / resize in image coords
+                                val b = toImage(e.x, e.y)
+                                dragCircle(b, bm)
                                 onChanged?.invoke()
                             } else {
                                 panX += e.x - lastX
@@ -216,38 +299,83 @@ class AnalyzerView(context: Context) : View(context) {
         }
     }
 
-    private var tapSeq = 0
+    private fun clampBmp(ip: PointF, bm: Bitmap): PointF = PointF(
+        ip.x.coerceIn(0f, bm.width.toFloat()),
+        ip.y.coerceIn(0f, bm.height.toFloat()),
+    )
+
+    /** Drag grabbed circle: kind 1 = move center, 2 = resize ring. */
+    private fun dragCircle(ip: PointF, bm: Bitmap) {
+        val lo = box.width() * 5f / 600f
+        val hi = box.width() * 60f / 600f
+        if (grabCoin >= 0 && grabCoin < coins.size) {
+            val c = coins[grabCoin]
+            if (grabKind == 1) {
+                val p = clampBmp(ip, bm)
+                c.p.x = p.x; c.p.y = p.y
+            } else {
+                val d = hypot(
+                    (ip.x - c.p.x).toDouble(),
+                    (ip.y - c.p.y).toDouble(),
+                ).toFloat()
+                c.r = d.coerceIn(lo, hi)
+            }
+            selCoin = grabCoin; selMark = null
+        } else if (grabMark != null) {
+            val m = markers[grabMark] ?: return
+            if (grabKind == 1) {
+                val p = clampBmp(ip, bm)
+                m.x = p.x; m.y = p.y
+            } else {
+                val d = hypot(
+                    (ip.x - m.x).toDouble(),
+                    (ip.y - m.y).toDouble(),
+                ).toFloat()
+                markRadii[grabMark!!] = d.coerceIn(lo, hi)
+            }
+            selMark = grabMark; selCoin = -1
+        }
+    }
 
     private fun handleTap(ip: PointF, bm: Bitmap) {
-        val c = PointF(
-            ip.x.coerceIn(0f, bm.width.toFloat()),
-            ip.y.coerceIn(0f, bm.height.toFloat()),
-        )
+        // tap on an existing circle = select it for resize (no new mark)
+        val (ci, mk) = circleAt(ip)
+        if (ci >= 0 || mk != null) {
+            selCoin = ci
+            selMark = mk
+            invalidate()
+            return
+        }
+        val c = clampBmp(ip, bm)
         when (activeMark) {
             "S" -> {
                 markers["S"] = c
-                tapSeq++
+                markRadii["S"] = defaultR("S")
+                selMark = "S"; selCoin = -1
                 onChanged?.invoke()
                 invalidate()
             }
             "POCKET" -> {
                 val n = markers.keys.count { it.startsWith("P") } + 1
                 if (n <= 4) {
-                    markers["P$n"] = c
-                    tapSeq++
+                    val k = "P$n"
+                    markers[k] = c
+                    markRadii[k] = defaultR("P")
+                    selMark = k; selCoin = -1
                     onChanged?.invoke()
                     invalidate()
                 }
             }
             "BLACK", "WHITE", "QUEEN" -> {
+                val t = when (activeMark) {
+                    "BLACK" -> "black"
+                    "WHITE" -> "white"
+                    else -> "red"
+                }
+                if (t == "red") coins.removeAll { it.type == "red" }
                 if (coins.size < 20) {
-                    val t = when (activeMark) {
-                        "BLACK" -> "black"
-                        "WHITE" -> "white"
-                        else -> "red"
-                    }
-                    coins.add(CoinMark(c, t))
-                    tapSeq++
+                    coins.add(CoinMark(c, t, defaultR("C")))
+                    selCoin = coins.size - 1; selMark = null
                     onChanged?.invoke()
                     invalidate()
                 }
@@ -342,7 +470,7 @@ class AnalyzerView(context: Context) : View(context) {
             box.left to box.bottom, box.right to box.bottom,
         )) canvas.drawCircle(cx, cy, 16f * px, handlePaint)
 
-        // numbered coin labels per type: B1.., W1.., Q
+        // numbered coin labels per type: B1.., W1.., Q — true tapped radii
         val counters = mutableMapOf("black" to 0, "white" to 0, "red" to 0)
         for ((i, c) in coins.withIndex()) {
             val n = (counters[c.type] ?: 0) + 1
@@ -352,16 +480,22 @@ class AnalyzerView(context: Context) : View(context) {
                 "white" -> "W$n"
                 else -> "Q"
             }
+            val rr = coinR(i)
             dotPaint.color = coinColor(c.type)
-            canvas.drawCircle(c.p.x, c.p.y, 15f * px, dotPaint)
+            canvas.drawCircle(c.p.x, c.p.y, rr, dotPaint)
             ringPaint.color = Color.BLACK
             ringPaint.strokeWidth = 3f * px
-            canvas.drawCircle(c.p.x, c.p.y, 15f * px, ringPaint)
+            canvas.drawCircle(c.p.x, c.p.y, rr, ringPaint)
             labelPaint.textSize = 30f * px
-            canvas.drawText(label, c.p.x + 20f * px, c.p.y + 10f * px, labelPaint)
-            if (pulseOn && i == coins.size - 1 && activeMark in listOf("BLACK", "WHITE", "QUEEN")) {
+            canvas.drawText(label, c.p.x + (rr + 6f * px), c.p.y + 10f * px, labelPaint)
+            if (selCoin == i) {
+                ringPaint.color = Color.YELLOW
+                ringPaint.strokeWidth = 4f * px
+                canvas.drawCircle(c.p.x, c.p.y, rr + 8f * px, ringPaint)
+                canvas.drawCircle(c.p.x + rr, c.p.y, 10f * px, handlePaint)
+            } else if (pulseOn && i == coins.size - 1 && activeMark in listOf("BLACK", "WHITE", "QUEEN")) {
                 pulsePaint.strokeWidth = 4f * px
-                canvas.drawCircle(c.p.x, c.p.y, 24f * px, pulsePaint)
+                canvas.drawCircle(c.p.x, c.p.y, rr + 9f * px, pulsePaint)
             }
         }
         for ((k, m) in markers) {
@@ -370,13 +504,20 @@ class AnalyzerView(context: Context) : View(context) {
                 k.startsWith("P") -> Color.GREEN
                 else -> Color.WHITE
             }
+            val rr = markR(k)
             dotPaint.color = col
-            canvas.drawCircle(m.x, m.y, 14f * px, dotPaint)
+            canvas.drawCircle(m.x, m.y, rr * 0.55f, dotPaint)
             ringPaint.color = col
             ringPaint.strokeWidth = 5f * px
-            canvas.drawCircle(m.x, m.y, 26f * px, ringPaint)
+            canvas.drawCircle(m.x, m.y, rr, ringPaint)
             labelPaint.textSize = 30f * px
-            canvas.drawText(k, m.x + 30f * px, m.y + 10f * px, labelPaint)
+            canvas.drawText(k, m.x + rr + 6f * px, m.y + 10f * px, labelPaint)
+            if (selMark == k) {
+                ringPaint.color = Color.YELLOW
+                ringPaint.strokeWidth = 4f * px
+                canvas.drawCircle(m.x, m.y, rr + 8f * px, ringPaint)
+                canvas.drawCircle(m.x + rr, m.y, 10f * px, handlePaint)
+            }
         }
         fun path(pts: List<PointF>, paint: Paint, w: Float) {
             paint.strokeWidth = w * px
