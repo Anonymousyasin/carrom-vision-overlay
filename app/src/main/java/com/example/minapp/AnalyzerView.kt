@@ -156,21 +156,11 @@ class AnalyzerView(context: Context) : View(context) {
                             ) < tol
                         ) 2 else 1
                     } else {
-                        // grab existing circle? (move inside, resize on ring)
+                        // grab existing circle for MOVE (tap-first: no ring resize)
                         val ip = toImage(e.x, e.y)
                         val (ci, mk) = circleAt(ip)
                         if (ci >= 0 || mk != null) {
-                            val (cx, cy, rr) = if (ci >= 0) {
-                                Triple(coins[ci].p.x, coins[ci].p.y, coinR(ci))
-                            } else {
-                                val m = markers[mk]!!
-                                Triple(m.x, m.y, markR(mk!!))
-                            }
-                            val d = hypot(
-                                (ip.x - cx).toDouble(),
-                                (ip.y - cy).toDouble(),
-                            ).toFloat()
-                            grabKind = if (d > rr * 0.7f) 2 else 1
+                            grabKind = 1
                             grabCoin = ci
                             grabMark = mk
                         }
@@ -304,35 +294,17 @@ class AnalyzerView(context: Context) : View(context) {
         ip.y.coerceIn(0f, bm.height.toFloat()),
     )
 
-    /** Drag grabbed circle: kind 1 = move center, 2 = resize ring. */
+    /** Drag grabbed circle: move center (tap-first; sizing via R±). */
     private fun dragCircle(ip: PointF, bm: Bitmap) {
-        val lo = box.width() * 5f / 600f
-        val hi = box.width() * 60f / 600f
         if (grabCoin >= 0 && grabCoin < coins.size) {
             val c = coins[grabCoin]
-            if (grabKind == 1) {
-                val p = clampBmp(ip, bm)
-                c.p.x = p.x; c.p.y = p.y
-            } else {
-                val d = hypot(
-                    (ip.x - c.p.x).toDouble(),
-                    (ip.y - c.p.y).toDouble(),
-                ).toFloat()
-                c.r = d.coerceIn(lo, hi)
-            }
+            val p = clampBmp(ip, bm)
+            c.p.x = p.x; c.p.y = p.y
             selCoin = grabCoin; selMark = null
         } else if (grabMark != null) {
             val m = markers[grabMark] ?: return
-            if (grabKind == 1) {
-                val p = clampBmp(ip, bm)
-                m.x = p.x; m.y = p.y
-            } else {
-                val d = hypot(
-                    (ip.x - m.x).toDouble(),
-                    (ip.y - m.y).toDouble(),
-                ).toFloat()
-                markRadii[grabMark!!] = d.coerceIn(lo, hi)
-            }
+            val p = clampBmp(ip, bm)
+            m.x = p.x; m.y = p.y
             selMark = grabMark; selCoin = -1
         }
     }
@@ -492,7 +464,6 @@ class AnalyzerView(context: Context) : View(context) {
                 ringPaint.color = Color.YELLOW
                 ringPaint.strokeWidth = 4f * px
                 canvas.drawCircle(c.p.x, c.p.y, rr + 8f * px, ringPaint)
-                canvas.drawCircle(c.p.x + rr, c.p.y, 10f * px, handlePaint)
             } else if (pulseOn && i == coins.size - 1 && activeMark in listOf("BLACK", "WHITE", "QUEEN")) {
                 pulsePaint.strokeWidth = 4f * px
                 canvas.drawCircle(c.p.x, c.p.y, rr + 9f * px, pulsePaint)
@@ -516,7 +487,6 @@ class AnalyzerView(context: Context) : View(context) {
                 ringPaint.color = Color.YELLOW
                 ringPaint.strokeWidth = 4f * px
                 canvas.drawCircle(m.x, m.y, rr + 8f * px, ringPaint)
-                canvas.drawCircle(m.x + rr, m.y, 10f * px, handlePaint)
             }
         }
         fun path(pts: List<PointF>, paint: Paint, w: Float) {
