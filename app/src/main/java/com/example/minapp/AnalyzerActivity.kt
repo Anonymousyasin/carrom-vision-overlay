@@ -35,7 +35,8 @@ class AnalyzerActivity : AppCompatActivity() {
     private lateinit var skipBtn: Button
 
     private var step = Step.BOX
-    private var playWhite = true    private var aimDeg = 0f
+    private var playWhite = true
+    private var aimDeg = 0f
     private var manualAim = false
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
