@@ -187,21 +187,58 @@ object Predictor {
         return Paths(listOf(striker, contact), best, cPath, sAfter)
     }
 
-    private fun segClear(a: Pair<Float, Float>, b: Pair<Float, Float>, coins: List<Coin>, ignore: Coin?): Boolean {
+    /** Last scan diagnostics for the UI ("11 blocked, 3 clean"). */
+    var lastScan = ""
+        private set
+
+    /**
+     * Exact ray-vs-circle: smallest t>0 where |origin + t*dir - center| = radius,
+     * or null on miss. dir must be normalized.
+     */
+    private fun rayHitCircle(
+        ox: Float, oy: Float, dx: Float, dy: Float,
+        cx: Float, cy: Float, radius: Float,
+    ): Float? {
+        val ocx = cx - ox
+        val ocy = cy - oy
+        val tca = ocx * dx + ocy * dy
+        if (tca < 0) return null
+        val d2 = ocx * ocx + ocy * ocy - tca * tca
+        if (d2 > radius * radius) return null
+        val t = tca - sqrt((radius * radius - d2).toDouble()).toFloat()
+        return if (t > 1e-3f) t else null
+    }
+
+    /**
+     * Swept-disc clearance: does a disc of [radius] rolling from [a] to [b]
+     * touch any coin (except [ignore])? Returns min miss margin (negative = hit).
+     */
+    private fun sweepMargin(
+        a: Pair<Float, Float>, b: Pair<Float, Float>,
+        coins: List<Coin>, ignore: Coin?, radius: Float,
+    ): Float {
         val dx = b.first - a.first
         val dy = b.second - a.second
         val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
-        if (len < 1e-6f) return true
+        if (len < 1e-6f) return Float.MAX_VALUE
         val nx = dx / len
         val ny = dy / len
+        var margin = Float.MAX_VALUE
         for (c in coins) {
-            if (c == ignore) continue
+            if (c === ignore) continue
+            val t = rayHitCircle(a.first, a.second, nx, ny, c.x, c.y, radius)
+            if (t != null && t < len) return -1f // blocked
+            // miss distance for safety bonus
             val rx = c.x - a.first
             val ry = c.y - a.second
-            val t = rx * nx + ry * ny
-            if (t > 0 && t < len && abs(rx * ny - ry * nx) < COIN_RADIUS * 2) return false
+            val proj = (rx * nx + ry * ny).coerceIn(0f, len)
+            val miss = hypot(
+                (rx - nx * proj).toDouble(),
+                (ry - ny * proj).toDouble(),
+            ).toFloat() - radius
+            if (miss < margin) margin = miss
         }
-        return true
+        return margin
     }
 
     fun bestShot(
@@ -211,7 +248,9 @@ object Predictor {
         pockets: List<Pair<Float, Float>> = POCKETS,
     ): Shot? = topShots(striker, coins, playWhite, pockets, 1).firstOrNull()
 
-    /** Ranked ghost-ball search over [pockets] (tapped ground truth, not ideals). */
+    /** Ranked ghost-ball search over [pockets] (tapped ground truth, not ideals).
+     *  Every candidate is FULLY SIMULATED: first contact must be the target,
+     *  every leg of the coin path must be clear, scratches are penalized. */
     fun topShots(
         striker: Pair<Float, Float>,
         coins: List<Coin>,
@@ -221,29 +260,83 @@ object Predictor {
     ): List<Shot> {
         val mine = if (playWhite) "white" else "black"
         val out = mutableListOf<Shot>()
+        var blocked = 0
+        var evaluated = 0
         for (c in coins) {
             if (c.type != mine && c.type != "red") continue
             for (p in pockets) {
+                evaluated++
                 val ddx = p.first - c.x
                 val ddy = p.second - c.y
                 val dlen = hypot(ddx.toDouble(), ddy.toDouble()).toFloat()
-                if (dlen < 1e-6f) continue
+                if (dlen < 1e-6f) {
+                    blocked++
+                    continue
+                }
                 val gx = c.x - ddx / dlen * 2 * COIN_RADIUS
                 val gy = c.y - ddy / dlen * 2 * COIN_RADIUS
+                val ghost = gx to gy
                 val sdx = gx - striker.first
                 val sdy = gy - striker.second
                 val slen = hypot(sdx.toDouble(), sdy.toDouble()).toFloat()
-                if (slen < 1e-6f) continue
-                if (!segClear(striker, gx to gy, coins, c)) continue
-                if (!segClear(c.x to c.y, p, coins, c)) continue
+                if (slen < 1e-6f) {
+                    blocked++
+                    continue
+                }
+                // 1) striker disc (R20) vs coins (R15): sweep radius 35
+                val margin = sweepMargin(
+                    striker, ghost, coins, c,
+                    STRIKER_RADIUS + COIN_RADIUS,
+                )
+                if (margin < 0) {
+                    blocked++
+                    continue
+                }
                 val cosCut = ((sdx / slen) * (ddx / dlen) + (sdy / slen) * (ddy / dlen)).coerceIn(-1f, 1f)
                 val cut = Math.toDegrees(acos(cosCut.toDouble())).toFloat()
-                if (cut > 75f) continue
-                val d1 = dist(striker, gx to gy)
+                if (cut > 75f) {
+                    blocked++
+                    continue
+                }
+                val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
+                // 2) simulate the REAL shot: first contact must be the target
+                val sim = predictPath(striker, rad, coins, 1, pockets)
+                if (sim.hit !== c) {
+                    blocked++
+                    continue
+                }
+                // 3) every coin-path leg must be clear of other coins
+                var legsClear = true
+                val legs = sim.coinPath.zipWithNext()
+                for ((a, b) in legs) {
+                    if (sweepMargin(a, b, coins, c, COIN_RADIUS * 2) < 0) {
+                        legsClear = false
+                        break
+                    }
+                }
+                if (!legsClear) {
+                    blocked++
+                    continue
+                }
+                // 4) coin must actually finish in THIS pocket
+                val endOk = sim.coinPath.lastOrNull()?.let { dist(it, p) < POCKET_RADIUS * 1.5f } == true
+                if (!endOk) {
+                    blocked++
+                    continue
+                }
+                val d1 = dist(striker, ghost)
                 val d2 = dist(c.x to c.y, p)
                 var score = 1f / (1f + d1 / 300f + d2 / 300f + cut / 45f)
                 if (c.type == "red") score *= 0.85f
-                val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
+                // safety bonus: tight squeezes score lower
+                score *= 1f + margin.coerceAtMost(30f) / 150f
+                // 5) scratch penalty: striker deflection falls in any pocket
+                for (pt in sim.strikerAfter.drop(1)) {
+                    if (pockets.any { dist(pt, it) < POCKET_RADIUS * 1.2f }) {
+                        score *= 0.4f
+                        break
+                    }
+                }
                 var deg = (Math.toDegrees(rad.toDouble()).toFloat() + 90f) % 360f
                 if (deg < 0) deg += 360f
                 out.add(
@@ -252,6 +345,7 @@ object Predictor {
                 )
             }
         }
+        lastScan = "$blocked blocked, ${out.size} clean of $evaluated"
         return out.sortedByDescending { it.score }.take(n)
     }
 

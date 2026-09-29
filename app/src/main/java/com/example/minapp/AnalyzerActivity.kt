@@ -309,8 +309,8 @@ class AnalyzerActivity : AppCompatActivity() {
         if (step == Step.RESULT) buildCards()
         if (msg == null && step != Step.RESULT) {
             hint.text = shot?.let {
-                "Live: ${it.reason} aim=${"%.0f".format(aimDeg)}° — Next ›"
-            } ?: "No clean pot yet — keep marking"
+                "Live: ${it.reason} aim=${"%.0f".format(aimDeg)}° (${Predictor.lastScan}) — Next ›"
+            } ?: "No clean pot yet (${Predictor.lastScan}) — keep marking"
         }
     }
 
@@ -321,7 +321,7 @@ class AnalyzerActivity : AppCompatActivity() {
             return
         }
         val sh = lastShots.getOrNull(selectedCard) ?: lastShots.first()
-        hint.text = "#${selectedCard + 1}: ${sh.reason} ★${"%.2f".format(sh.score)}"
+        hint.text = "#${selectedCard + 1}: ${sh.reason} ★${"%.2f".format(sh.score)} (${Predictor.lastScan})"
         lastShots.forEachIndexed { i, s ->
             val b = Button(this).apply {
                 text = "#${i + 1} ${s.reason} ★${"%.2f".format(s.score)}"
