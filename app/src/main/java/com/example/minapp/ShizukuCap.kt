@@ -28,9 +28,13 @@ object ShizukuCap {
     fun capture(absPath: String): Boolean {
         if (!isRunning() || !isGranted()) return false
         return try {
-            // screencap runs as shell/adb identity through Shizuku, no root needed
-            val p = Shizuku.newProcess(arrayOf("screencap", "-p", absPath), null, null)
-            p.waitFor() == 0
+            // newProcess is hidden in api 13.x — reach it via reflection
+            val m = Shizuku::class.java.methods.firstOrNull {
+                it.name == "newProcess" && it.parameterTypes.size == 3
+            } ?: return false
+            val args: Array<Any?> = arrayOf(arrayOf("screencap", "-p", absPath), null, null)
+            val p = m.invoke(null, *args) as? Process
+            p?.waitFor() == 0
         } catch (_: Exception) {
             false
         }
