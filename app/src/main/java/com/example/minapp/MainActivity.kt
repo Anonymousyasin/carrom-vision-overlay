@@ -21,6 +21,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusShizuku: TextView
     private lateinit var statusDemo: TextView
     private lateinit var sideBtn: Button
+    private lateinit var samplesView: TextView
+
+    private fun samplesText(): String {
+        val n = SampleExporter.count(this)
+        return "Training samples: $n (tap for folder)"
+    }
 
     private fun isWhite(): Boolean =
         getSharedPreferences("cv_prefs", MODE_PRIVATE).getBoolean("playWhite", true)
@@ -69,16 +75,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-            addView(TextView(context).apply {
-                text = "◉ Carrom Vision"
-                textSize = 24f; gravity = Gravity.CENTER
-            })
-            addView(statusOverlay)
-            addView(statusShizuku)
-            addView(sideBtn)
+        val root = android.widget.ScrollView(this).apply {
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(32, 32, 32, 32)
+                addView(TextView(context).apply {
+                    text = "◉ Carrom Vision"
+                    textSize = 24f; gravity = Gravity.CENTER
+                })
+                addView(statusOverlay)
+                addView(statusShizuku)
+                addView(sideBtn)
             addView(btn("1. Grant overlay permission") { askOverlayPermission() })
             addView(btn("2. Request Shizuku permission") { ShizukuCap.requestPermission(100); })
             addView(btn("3. Start overlay over Carrom Pool") { startOverlay() })
@@ -86,6 +93,12 @@ class MainActivity : AppCompatActivity() {
             addView(btn("Stop overlay") { stopService(Intent(this@MainActivity, OverlayService::class.java)) })
             addView(btn("Offline demo predict") { demo() })
             addView(statusDemo)
+            addView(TextView(context).apply {
+                textSize = 14f; gravity = Gravity.CENTER
+                text = samplesText()
+                setOnClickListener { toast(SampleExporter.dir(this@MainActivity).absolutePath) }
+            }.also { samplesView = it })
+            })
         }
         setContentView(root)
 
@@ -99,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshStatus()
         refreshSide()
+        if (::samplesView.isInitialized) samplesView.text = samplesText()
     }
 
     override fun onDestroy() {

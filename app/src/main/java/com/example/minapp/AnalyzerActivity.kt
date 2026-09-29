@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -40,6 +41,10 @@ class AnalyzerActivity : AppCompatActivity() {
     private var manualAim = false
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
+    private var imageUri: Uri? = null
+    private var fullW = 0
+    private var fullH = 0
+    private lateinit var saveBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +54,7 @@ class AnalyzerActivity : AppCompatActivity() {
             finish()
             return
         }
+        imageUri = uri
         val bm = decode(uri) ?: run {
             toast("Cannot read image")
             finish()
@@ -88,6 +94,7 @@ class AnalyzerActivity : AppCompatActivity() {
         nextBtn = sbtn("Next ›") { next() }
         skipBtn = sbtn("Skip") { next() }
 
+        saveBtn = sbtn("💾 Save") { saveSample() }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
@@ -107,6 +114,7 @@ class AnalyzerActivity : AppCompatActivity() {
                 sideBtn,
                 sbtn("Aim−") { aimDeg = (aimDeg - 2f + 360f) % 360f; manualAim = true; refresh(null) },
                 sbtn("Aim+") { aimDeg = (aimDeg + 2f) % 360f; manualAim = true; refresh(null) },
+                saveBtn,
                 sbtn("X") { finish() },
             ))
         }
@@ -150,6 +158,7 @@ class AnalyzerActivity : AppCompatActivity() {
         nextBtn.text = if (step == Step.POCKETS) "Results ›" else "Next ›"
         cardsBox.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         sideBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
+        saveBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         view.invalidate()
         refresh(
             when (step) {
@@ -238,10 +247,13 @@ class AnalyzerActivity : AppCompatActivity() {
         setOnClickListener { onClick() }
     }
 
-    private fun row(vararg views: View) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER
-        for (v in views) addView(v)
+    private fun row(vararg views: View) = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            for (v in views) addView(v)
+        })
     }
 
     private fun to600(p: PointF): Pair<Float, Float> {
@@ -348,6 +360,8 @@ class AnalyzerActivity : AppCompatActivity() {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            fullW = bounds.outWidth
+            fullH = bounds.outHeight
             var sample = 1
             val maxDim = bounds.outWidth.coerceAtLeast(bounds.outHeight)
             while (maxDim / sample > 2048) sample *= 2
@@ -356,6 +370,32 @@ class AnalyzerActivity : AppCompatActivity() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun saveSample() {
+        val bm = view.bitmap
+        val uri = imageUri
+        if (bm == null || uri == null) {
+            toast("No image")
+            return
+        }
+        if (!view.markers.containsKey("S") || view.coins.isEmpty()) {
+            toast("Mark striker + coins first")
+            return
+        }
+        toast("Saving…")
+        Thread {
+            val scale = if (bm.width > 0 && fullW > 0) fullW.toFloat() / bm.width else 1f
+            val id = SampleExporter.export(
+                this, uri, bm, scale, view.box, view.markers.toMap(),
+                view.coins.map { SampleExporter.InCoin(PointF(it.p.x, it.p.y), it.type) },
+                playWhite,
+                lastShots.getOrNull(selectedCard),
+            )
+            runOnUiThread {
+                toast(if (id != null) "Saved $id (${SampleExporter.count(this)} samples)" else "Save failed")
+            }
+        }.start()
     }
 
     private fun toast(msg: String) {
