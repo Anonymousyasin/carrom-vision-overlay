@@ -222,6 +222,10 @@ object Predictor {
     var lastScan = ""
         private set
 
+    /** Per-candidate rejection reasons from the last topShots call. */
+    var lastRejects: List<String> = emptyList()
+        private set
+
     /**
      * Exact ray-vs-circle: smallest t>0 where |origin + t*dir - center| = radius,
      * or null on miss. dir must be normalized.
@@ -296,6 +300,14 @@ object Predictor {
         fun prAt(i: Int) = pocketRadii?.getOrNull(i) ?: POCKET_RADIUS
         val mine = if (playWhite) "white" else "black"
         val out = mutableListOf<Shot>()
+        val rejects = mutableListOf<String>()
+        fun rej(c: Coin, p: Pair<Float, Float>, why: String) {
+            if (rejects.size < 40) {
+                rejects.add(
+                    "${c.type}@(${c.x.toInt()},${c.y.toInt()})→(${p.first.toInt()},${p.second.toInt()}): $why",
+                )
+            }
+        }
         var blocked = 0
         var evaluated = 0
         for (c in coins) {
@@ -307,6 +319,7 @@ object Predictor {
                 val dlen = hypot(ddx.toDouble(), ddy.toDouble()).toFloat()
                 if (dlen < 1e-6f) {
                     blocked++
+                    rej(c, p, "on top of pocket")
                     continue
                 }
                 val reach = c.r + strikerR
@@ -318,6 +331,7 @@ object Predictor {
                 val slen = hypot(sdx.toDouble(), sdy.toDouble()).toFloat()
                 if (slen < 1e-6f) {
                     blocked++
+                    rej(c, p, "striker on ghost spot")
                     continue
                 }
                 // 1) striker disc vs coins: sweep radius strikerR + coinR
@@ -327,12 +341,14 @@ object Predictor {
                 )
                 if (margin < 0) {
                     blocked++
+                    rej(c, p, "striker path blocked")
                     continue
                 }
                 val cosCut = ((sdx / slen) * (ddx / dlen) + (sdy / slen) * (ddy / dlen)).coerceIn(-1f, 1f)
                 val cut = Math.toDegrees(acos(cosCut.toDouble())).toFloat()
                 if (cut > 75f) {
                     blocked++
+                    rej(c, p, "cut ${cut.toInt()}° too thin")
                     continue
                 }
                 val rad = atan2(sdy.toDouble(), sdx.toDouble()).toFloat()
@@ -340,6 +356,8 @@ object Predictor {
                 val sim = predictPath(striker, rad, coins, 1, pockets, strikerR, pocketRadii)
                 if (sim.hit !== c) {
                     blocked++
+                    val h = sim.hit
+                    rej(c, p, if (h == null) "hits nothing" else "hits ${h.type}@(${h.x.toInt()},${h.y.toInt()}) first")
                     continue
                 }
                 // 3) every coin-path leg must be clear of other coins
@@ -353,12 +371,14 @@ object Predictor {
                 }
                 if (!legsClear) {
                     blocked++
+                    rej(c, p, "coin path blocked")
                     continue
                 }
                 // 4) coin must actually finish in THIS pocket
                 val endOk = sim.coinPath.lastOrNull()?.let { dist(it, p) < prAt(pi) * 1.5f } == true
                 if (!endOk) {
                     blocked++
+                    rej(c, p, "doesn't reach pocket")
                     continue
                 }
                 val d1 = dist(striker, ghost)
@@ -383,6 +403,7 @@ object Predictor {
             }
         }
         lastScan = "$blocked blocked, ${out.size} clean of $evaluated"
+        lastRejects = rejects
         return out.sortedByDescending { it.score }.take(n)
     }
 

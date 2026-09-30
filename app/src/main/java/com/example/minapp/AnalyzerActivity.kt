@@ -120,6 +120,7 @@ class AnalyzerActivity : AppCompatActivity() {
                 sbtn("Clear") { clearStep() },
                 skipBtn,
                 sbtn("Zoom 1:1") { view.resetZoom() },
+                sbtn("🔍 Why") { showWhy() },
                 nextBtn,
             ))
             addView(row(
@@ -394,8 +395,16 @@ class AnalyzerActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildCards() {
-        cardsBox.removeAllViews()
+    private fun showWhy() {
+        val lines = Predictor.lastRejects
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Why coins were rejected (${lines.size})")
+            .setMessage(if (lines.isEmpty()) "Nothing rejected yet — mark pieces first." else lines.joinToString("\n"))
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun buildCards() {        cardsBox.removeAllViews()
         if (lastShots.isEmpty()) {
             hint.text = "No clean pot — try Aim± or check marks"
             return
@@ -466,7 +475,8 @@ class AnalyzerActivity : AppCompatActivity() {
                 lastShots.getOrNull(selectedCard),
             )
             runOnUiThread {
-                toast(if (id != null) "Saved $id (${SampleExporter.count(this)} samples)" else "Save failed")
+                val err = SampleExporter.lastError
+                toast(if (id != null) "Saved $id (${SampleExporter.count(this)} samples)" else "Save failed: $err")
             }
         }.start()
     }

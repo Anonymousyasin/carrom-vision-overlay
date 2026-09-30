@@ -39,6 +39,10 @@ object SampleExporter {
 
     data class Sample(val id: String, val dateS: Long)
 
+    /** Human-readable reason the last export failed ("" = no failure yet). */
+    var lastError = ""
+        private set
+
     private fun downloads(): Uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
 
     fun count(ctx: Context): Int {
@@ -142,16 +146,27 @@ object SampleExporter {
     private fun writePublic(ctx: Context, name: String, mime: String, bytes: ByteArray): Boolean {
         return try {
             // replace existing
-            findUri(ctx, name)?.let { ctx.contentResolver.delete(it, null, null) }
+            try {
+                findUri(ctx, name)?.let { ctx.contentResolver.delete(it, null, null) }
+            } catch (_: Exception) { }
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, mime)
                 put(MediaStore.Downloads.RELATIVE_PATH, REL_PATH)
             }
-            val uri = ctx.contentResolver.insert(downloads(), values) ?: return false
+            val uri = ctx.contentResolver.insert(downloads(), values)
+            if (uri == null) {
+                lastError = "insert returned null for $name"
+                return false
+            }
             ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: run {
+                    lastError = "openOutputStream null for $name"
+                    return false
+                }
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastError = "write $name: ${e.javaClass.simpleName} ${e.message}"
             false
         }
     }
@@ -197,12 +212,19 @@ object SampleExporter {
         playWhite: Boolean,
         best: Predictor.Shot?,
     ): String? {
+        fun fail(stage: String, e: Exception? = null): String? {
+            lastError = if (e != null) "$stage: ${e.javaClass.simpleName} ${e.message}" else stage
+            return null
+        }
         try {
-            if (box.width() < 1f || box.height() < 1f) return null
+            if (box.width() < 1f || box.height() < 1f) return fail("bad box ${box.width()}x${box.height()}")
             val id = "shot_%04d".format(count(ctx) + 1)
 
-            val fullBytes: ByteArray = ctx.contentResolver.openInputStream(fullUri)
-                ?.use { it.readBytes() } ?: return null
+            val fullBytes: ByteArray = try {
+                ctx.contentResolver.openInputStream(fullUri)?.use { it.readBytes() }
+            } catch (e: Exception) {
+                return fail("read picked image", e)
+            } ?: return fail("picked image unreadable (permission lost?)")
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(fullBytes, 0, fullBytes.size, bounds)
             val sha1 = MessageDigest.getInstance("SHA-1").digest(fullBytes)
@@ -212,16 +234,18 @@ object SampleExporter {
                 box.left * imgScale, box.top * imgScale,
                 box.right * imgScale, box.bottom * imgScale,
             )
-            val crop = Bitmap.createScaledBitmap(
-                Bitmap.createBitmap(
-                    bitmap,
-                    box.left.toInt().coerceIn(0, bitmap.width - 1),
-                    box.top.toInt().coerceIn(0, bitmap.height - 1),
-                    box.width().toInt().coerceAtMost(bitmap.width - box.left.toInt()),
-                    box.height().toInt().coerceAtMost(bitmap.height - box.top.toInt()),
-                ),
-                CROP_OUT, CROP_OUT, true,
-            )
+            val bx = box.left.toInt().coerceIn(0, (bitmap.width - 1).coerceAtLeast(0))
+            val by = box.top.toInt().coerceIn(0, (bitmap.height - 1).coerceAtLeast(0))
+            val bw = box.width().toInt().coerceIn(1, (bitmap.width - bx).coerceAtLeast(1))
+            val bh = box.height().toInt().coerceIn(1, (bitmap.height - by).coerceAtLeast(1))
+            val crop = try {
+                Bitmap.createScaledBitmap(
+                    Bitmap.createBitmap(bitmap, bx, by, bw, bh),
+                    CROP_OUT, CROP_OUT, true,
+                )
+            } catch (e: Exception) {
+                return fail("crop bitmap ${bw}x$bh from ${bitmap.width}x${bitmap.height}", e)
+            }
             val cropBytes = java.io.ByteArrayOutputStream().let {
                 crop.compress(Bitmap.CompressFormat.JPEG, 92, it)
                 it.toByteArray()
@@ -373,12 +397,19 @@ object SampleExporter {
                     .put("angle_deg", best.angleDeg)
                     .put("score", best.score))
             }
-            if (!writePublic(ctx, "$id.json", "application/json", root.toString(1).toByteArray())) return null
-            if (!writePublic(ctx, "$id.jpg", "image/jpeg", cropBytes)) return null
-            if (!writePublic(ctx, "$id-full.jpg", "image/jpeg", fullBytes)) return null
+            if (!writePublic(ctx, "$id.json", "application/json", root.toString(1).toByteArray())) {
+                return fail("MediaStore insert JSON: $lastError")
+            }
+            if (!writePublic(ctx, "$id.jpg", "image/jpeg", cropBytes)) {
+                return fail("MediaStore insert crop: $lastError")
+            }
+            if (!writePublic(ctx, "$id-full.jpg", "image/jpeg", fullBytes)) {
+                return fail("MediaStore insert full: $lastError")
+            }
+            lastError = ""
             return id
-        } catch (_: Exception) {
-            return null
+        } catch (e: Exception) {
+            return fail("unexpected", e)
         }
     }
 
