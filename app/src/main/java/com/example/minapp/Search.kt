@@ -34,11 +34,13 @@ object Search {
 
     private data class Seed(
         val angle: Float,
-        val speed: Float,
         val targetIdx: Int,
         val pocketIdx: Int,
         val viaIdx: Int,
         val hint: String,
+        val winDeg: Float,
+        val stepDeg: Float,
+        val speeds: List<Float>,
     )
 
     fun fast(
@@ -70,35 +72,40 @@ object Search {
                 val gx = c.x - dx / dl * (c.r + strikerR)
                 val gy = c.y - dy / dl * (c.r + strikerR)
                 val ang = atan2((gy - striker.second).toDouble(), (gx - striker.first).toDouble()).toFloat()
-                seeds.add(Seed(ang, Sim.SPEED_MED, i, pi, -1, "DIRECT"))
+                seeds.add(Seed(ang, i, pi, -1, "DIRECT", 1.5f, 0.3f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
             }
         }
         // BANK: cushion-first. Correct mirror construction: reflect the GHOST
-        // point (not the pocket) across the cushion, aim the striker straight
-        // at it; the sim then validates cushion-first contact. The crossing
-        // point must lie on the cushion segment or the seed is dropped.
+        // point (not the pocket) across the EFFECTIVE cushion (wall inset by
+        // striker radius — discs bounce r early, a point-mirror misses by ~2r),
+        // aim the striker straight at it; the sim validates cushion-first
+        // contact. The crossing must lie on the cushion segment.
         fun crossOnWall(
             gx: Float, gy: Float,
             wall: Char,
         ): Pair<Float, Float>? {
             // returns mirrored ghost if S->G' crosses `wall` within bounds
+            val eL = Sim.LO + strikerR
+            val eR = Sim.HI - strikerR
+            val eT = Sim.LO + strikerR
+            val eB = Sim.HI - strikerR
             val (mx, my) = when (wall) {
-                'L' -> (2 * Sim.LO - gx) to gy
-                'R' -> (2 * Sim.HI - gx) to gy
-                'T' -> gx to (2 * Sim.LO - gy)
-                else -> gx to (2 * Sim.HI - gy)
+                'L' -> (2 * eL - gx) to gy
+                'R' -> (2 * eR - gx) to gy
+                'T' -> gx to (2 * eT - gy)
+                else -> gx to (2 * eB - gy)
             }
             val dx = mx - striker.first
             val dy = my - striker.second
             if (wall == 'L' || wall == 'R') {
-                val edge = if (wall == 'L') Sim.LO else Sim.HI
+                val edge = if (wall == 'L') eL else eR
                 if (abs(dx) < 1e-6f) return null
                 val t = (edge - striker.first) / dx
                 if (t <= 0f || t >= 1f) return null
                 val y = striker.second + t * dy
                 if (y < Sim.LO || y > Sim.HI) return null
             } else {
-                val edge = if (wall == 'T') Sim.LO else Sim.HI
+                val edge = if (wall == 'T') eT else eB
                 if (abs(dy) < 1e-6f) return null
                 val t = (edge - striker.second) / dy
                 if (t <= 0f || t >= 1f) return null
@@ -122,7 +129,7 @@ object Search {
                         (m.second - striker.second).toDouble(),
                         (m.first - striker.first).toDouble(),
                     ).toFloat()
-                    seeds.add(Seed(ang, Sim.SPEED_MED, i, pi, -1, "BANK"))
+                    seeds.add(Seed(ang, i, pi, -1, "BANK", 4.0f, 0.5f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
                 }
             }
         }
@@ -154,20 +161,22 @@ object Search {
                     )
                     if (cut > 60f) continue
                     val ang = atan2((hy - striker.second).toDouble(), (hx - striker.first).toDouble()).toFloat()
-                    seeds.add(Seed(ang, Sim.SPEED_MED, b, pi, a, "COMBO"))
+                    seeds.add(Seed(ang, b, pi, a, "COMBO", 2.0f, 0.4f, listOf(Sim.SPEED_MED)))
                 }
             }
         }
 
-        // ---------- run seeded fine sweep ----------
+        // ---------- run seeded fine sweep (per-seed windows; banks sweep
+        // wide because cushion restitution shifts the true angle off-mirror)
         val found = ArrayList<Found>()
         var seededSims = 0
         for (sd in seeds) {
             if (System.currentTimeMillis() - t0 > budgetMs * 2 / 3) break
-            var a = sd.angle - Math.toRadians(1.5).toFloat()
-            val step = Math.toRadians(0.3).toFloat()
-            repeat(11) {
-                for (sp in listOf(Sim.SPEED_MED, Sim.SPEED_HARD)) {
+            var a = sd.angle - Math.toRadians(sd.winDeg.toDouble()).toFloat()
+            val step = Math.toRadians(sd.stepDeg.toDouble()).toFloat()
+            val n = (2 * sd.winDeg / sd.stepDeg).toInt() + 1
+            repeat(n) {
+                for (sp in sd.speeds) {
                     if (System.currentTimeMillis() - t0 > budgetMs * 2 / 3) return@repeat
                     sims++
                     seededSims++
