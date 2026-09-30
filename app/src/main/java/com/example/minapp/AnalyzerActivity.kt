@@ -31,6 +31,7 @@ class AnalyzerActivity : AppCompatActivity() {
     private lateinit var stepBar: TextView
     private lateinit var hint: TextView
     private lateinit var cardsBox: LinearLayout
+    private lateinit var cardsScroll: android.widget.ScrollView
     private lateinit var sideBtn: Button
     private lateinit var nextBtn: Button
     private lateinit var skipBtn: Button
@@ -41,6 +42,8 @@ class AnalyzerActivity : AppCompatActivity() {
     private var manualAim = false
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
+    /** Parallel to lastShots: true = your color, false = opponent threat. */
+    private var lastMine: List<Boolean> = emptyList()
     private var imageUri: Uri? = null
     private var fullW = 0
     private var fullH = 0
@@ -84,6 +87,15 @@ class AnalyzerActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        val cardsScroll = android.widget.ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (320 * resources.displayMetrics.density).toInt(),
+            )
+            addView(cardsBox)
+            visibility = View.GONE
+        }
+        this.cardsScroll = cardsScroll
         sideBtn = sbtn("I:White") {
             playWhite = !playWhite
             sideBtn.text = if (playWhite) "I:White" else "I:Black"
@@ -101,7 +113,7 @@ class AnalyzerActivity : AppCompatActivity() {
             addView(stepBar)
             addView(view)
             addView(hint)
-            addView(cardsBox)
+            addView(cardsScroll)
             addView(row(
                 sbtn("‹ Back") { back() },
                 sbtn("Undo") { undoStep() },
@@ -156,7 +168,7 @@ class AnalyzerActivity : AppCompatActivity() {
         }
         skipBtn.visibility = if (step == Step.QUEEN) View.VISIBLE else View.GONE
         nextBtn.text = if (step == Step.POCKETS) "Results ›" else "Next ›"
-        cardsBox.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
+        cardsScroll.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         sideBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         saveBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         view.invalidate()
@@ -330,14 +342,29 @@ class AnalyzerActivity : AppCompatActivity() {
             return
         }
         val s600 = to600(s)
-        val mine = if (playWhite) "white" else "black"
-        val playable = coins600.filter { it.type == mine || it.type == "red" }
         val pkts = pockets600()
         val pktR = pocketRadii600()
         val sr = strikerR600()
-        lastShots = if (playable.isNotEmpty()) {
-            Predictor.topShots(s600, playable, playWhite, pkts, 3, sr, pktR)
-        } else emptyList()
+        // rank BOTH sides: yours first, opponent threats after — nothing pottable hides.
+        // one card per coin (best pocket each) so no pottable piece is ever crowded out.
+        val minePool = Predictor.topShots(s600, coins600, playWhite, pkts, 8, sr, pktR)
+        val oppPool = Predictor.topShots(s600, coins600, !playWhite, pkts, 8, sr, pktR)
+        fun keyOf(sh: Predictor.Shot) = "${sh.targetX.toInt()},${sh.targetY.toInt()}"
+        val seen = mutableSetOf<String>()
+        val combined = mutableListOf<Predictor.Shot>()
+        val combinedMine = mutableListOf<Boolean>()
+        for ((pool, isMine) in listOf(minePool to true, oppPool to false)) {
+            for (sh in pool.sortedByDescending { it.score }) {
+                if (combined.size >= 8) break
+                if (seen.add(keyOf(sh))) {
+                    combined.add(sh)
+                    combinedMine.add(isMine)
+                }
+            }
+        }
+        lastShots = combined
+        lastMine = combinedMine
+        if (selectedCard >= lastShots.size) selectedCard = 0
         val shot = lastShots.getOrNull(selectedCard) ?: lastShots.firstOrNull()
         if (shot != null && !manualAim) aimDeg = shot.angleDeg
         val rad = Math.toRadians((aimDeg - 90).toDouble()).toFloat()
@@ -361,7 +388,8 @@ class AnalyzerActivity : AppCompatActivity() {
         if (step == Step.RESULT) buildCards()
         if (msg == null && step != Step.RESULT) {
             hint.text = shot?.let {
-                "Live: ${it.reason} aim=${"%.0f".format(aimDeg)}° (${Predictor.lastScan}) — Next ›"
+                val tag = if (lastMine.getOrElse(selectedCard) { true }) "YOU" else "OPP"
+                "Live [$tag]: ${it.reason} aim=${"%.0f".format(aimDeg)}° (${Predictor.lastScan}) — Next ›"
             } ?: "No clean pot yet (${Predictor.lastScan}) — keep marking"
         }
     }
@@ -373,14 +401,19 @@ class AnalyzerActivity : AppCompatActivity() {
             return
         }
         val sh = lastShots.getOrNull(selectedCard) ?: lastShots.first()
-        hint.text = "#${selectedCard + 1}: ${sh.reason} ★${"%.2f".format(sh.score)} (${Predictor.lastScan})"
+        val shTag = if (lastMine.getOrElse(selectedCard) { true }) "YOU" else "OPP threat"
+        hint.text = "#${selectedCard + 1} [$shTag]: ${sh.reason} ★${"%.2f".format(sh.score)} (${Predictor.lastScan})"
         lastShots.forEachIndexed { i, s ->
+            val tag = if (lastMine.getOrElse(i) { true }) "YOU" else "OPP"
             val b = Button(this).apply {
-                text = "#${i + 1} ${s.reason} ★${"%.2f".format(s.score)}"
+                text = "#${i + 1} [$tag] ${s.reason} ★${"%.2f".format(s.score)}"
                 textSize = 13f
                 setBackgroundColor(
-                    if (i == selectedCard) Color.parseColor("#0e5a73")
-                    else Color.parseColor("#333333"),
+                    when {
+                        i == selectedCard -> Color.parseColor("#0e5a73")
+                        !lastMine.getOrElse(i) { true } -> Color.parseColor("#5a2323")
+                        else -> Color.parseColor("#333333")
+                    },
                 )
                 setTextColor(Color.WHITE)
                 setOnClickListener {
