@@ -29,6 +29,7 @@ class AnalyzerActivity : AppCompatActivity() {
 
     private lateinit var view: AnalyzerView
     private lateinit var stepBar: TextView
+    private lateinit var stepProgress: android.widget.ProgressBar
     private lateinit var hint: TextView
     private lateinit var cardsBox: LinearLayout
     private lateinit var cardsScroll: android.widget.ScrollView
@@ -38,12 +39,13 @@ class AnalyzerActivity : AppCompatActivity() {
 
     private var step = Step.BOX
     private var playWhite = true
-    private var aimDeg = 0f
-    private var manualAim = false
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
     /** Parallel to lastShots: true = your color, false = opponent threat. */
     private var lastMine: List<Boolean> = emptyList()
+    /** Full ULTRA results (traces) parallel to lastShots. */
+    private var lastFound: List<Search.Found> = emptyList()
+    private var searchGen = 0
     private var imageUri: Uri? = null
     private var fullW = 0
     private var fullH = 0
@@ -72,11 +74,27 @@ class AnalyzerActivity : AppCompatActivity() {
             onChanged = { refresh(null) }
         }
         stepBar = TextView(this).apply {
-            textSize = 17f
+            textSize = 16f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#1b3a4b"))
-            setPadding(8, 12, 8, 12)
+            setPadding(24, 14, 24, 14)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = 48f
+                setColor(Color.parseColor("#0e5a73"))
+            }
+        }
+        val stepWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 12, 16, 4)
+            addView(stepBar)
+            addView(android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = Step.values().size
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                )
+            }.also { stepProgress = it })
         }
         hint = TextView(this).apply {
             textSize = 13f; setTextColor(Color.LTGRAY)
@@ -99,7 +117,6 @@ class AnalyzerActivity : AppCompatActivity() {
         sideBtn = sbtn("I:White") {
             playWhite = !playWhite
             sideBtn.text = if (playWhite) "I:White" else "I:Black"
-            manualAim = false
             selectedCard = 0
             refresh(null)
         }
@@ -110,7 +127,7 @@ class AnalyzerActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
-            addView(stepBar)
+            addView(stepWrap)
             addView(view)
             addView(hint)
             addView(cardsScroll)
@@ -125,8 +142,6 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
             addView(row(
                 sideBtn,
-                sbtn("Aim−") { aimDeg = (aimDeg - 2f + 360f) % 360f; manualAim = true; refresh(null) },
-                sbtn("Aim+") { aimDeg = (aimDeg + 2f) % 360f; manualAim = true; refresh(null) },
                 saveBtn,
                 sbtn("X") { finish() },
             ))
@@ -144,6 +159,7 @@ class AnalyzerActivity : AppCompatActivity() {
     private fun totalSteps() = Step.values().size
 
     private fun applyStep() {
+        stepProgress.progress = step.ordinal + 1
         view.activeMark = when (step) {
             Step.BOX -> "BOX"
             Step.BLACK -> "BLACK"
@@ -333,93 +349,152 @@ class AnalyzerActivity : AppCompatActivity() {
             Predictor.Coin(q.first, q.second, c.type, r600(view.coinR(i)))
         }
         if (s == null || coins600.isEmpty()) {
+            searchGen++ // invalidate in-flight searches
             view.strikerPath = emptyList()
             view.coinPath = emptyList()
             view.strikerAfter = emptyList()
+            view.comboPath = emptyList()
             view.bestTarget = null
             view.pocket = null
             view.invalidate()
             if (msg == null && step == Step.RESULT) hint.text = "Need striker + coins"
             return
         }
+        // markers draw instantly; ULTRA search runs off the UI thread
+        if (msg == null) hint.text = "ULTRA searching…"
+        view.invalidate()
+        val gen = ++searchGen
         val s600 = to600(s)
         val pkts = pockets600()
         val pktR = pocketRadii600()
         val sr = strikerR600()
-        // rank BOTH sides: yours first, opponent threats after — nothing pottable hides.
-        // one card per coin (best pocket each) so no pottable piece is ever crowded out.
-        val minePool = Predictor.topShots(s600, coins600, playWhite, pkts, 8, sr, pktR)
-        val oppPool = Predictor.topShots(s600, coins600, !playWhite, pkts, 8, sr, pktR)
-        fun keyOf(sh: Predictor.Shot) = "${sh.targetX.toInt()},${sh.targetY.toInt()}"
-        val seen = mutableSetOf<String>()
-        val combined = mutableListOf<Predictor.Shot>()
-        val combinedMine = mutableListOf<Boolean>()
-        for ((pool, isMine) in listOf(minePool to true, oppPool to false)) {
-            for (sh in pool.sortedByDescending { it.score }) {
-                if (combined.size >= 8) break
-                if (seen.add(keyOf(sh))) {
-                    combined.add(sh)
-                    combinedMine.add(isMine)
+        val wantWhite = playWhite
+        Thread {
+            val mine = Search.fast(s600, sr, coins600, wantWhite, pkts, pktR, 900)
+            val opp = Search.fast(s600, sr, coins600, !wantWhite, pkts, pktR, 500)
+            fun keyOf(f: Search.Found) = "${f.targetIdx}:${f.pocketIdx}"
+            val seen = mutableSetOf<String>()
+            val combined = ArrayList<Search.Found>()
+            val combinedMine = ArrayList<Boolean>()
+            for ((pool, isMine) in listOf(mine to true, opp to false)) {
+                for (f in pool) {
+                    if (combined.size >= 8) break
+                    if (seen.add(keyOf(f))) {
+                        combined.add(f)
+                        combinedMine.add(isMine)
+                    }
                 }
             }
-        }
-        lastShots = combined
-        lastMine = combinedMine
-        if (selectedCard >= lastShots.size) selectedCard = 0
-        val shot = lastShots.getOrNull(selectedCard) ?: lastShots.firstOrNull()
-        if (shot != null && !manualAim) aimDeg = shot.angleDeg
-        val rad = Math.toRadians((aimDeg - 90).toDouble()).toFloat()
-        val res = Predictor.predictPath(s600, rad, coins600, 1, pkts, sr, pktR)
-        view.strikerPath = res.strikerPath.map { toImage(it) }
-        view.coinPath = res.coinPath.map { toImage(it) }
-        view.strikerAfter = res.strikerAfter.map { toImage(it) }
-        view.bestTarget = shot?.let { toImage(it.targetX to it.targetY) }
-        view.pocket = null
-        val tappedP = view.markers.keys.filter { it.startsWith("P") }.sorted()
-            .map { view.markers[it]!! to view.markR(it) }
-        outer@ for ((pk, pr) in tappedP) {
-            for (pt in view.coinPath + view.strikerPath + view.strikerAfter) {
-                if (hypot((pt.x - pk.x).toDouble(), (pt.y - pk.y).toDouble()) < pr * 1.5f) {
-                    view.pocket = pk
-                    break@outer
+            runOnUiThread {
+                if (gen != searchGen) return@runOnUiThread
+                lastFound = combined
+                lastMine = combinedMine
+                lastShots = combined.map { f ->
+                    val c = coins600[f.targetIdx]
+                    val pk = pkts[f.pocketIdx]
+                    Predictor.Shot(
+                        c.x, c.y, c.x, c.y,
+                        f.angleDeg, f.angleRad,
+                        pk.first, pk.second,
+                        f.score, "${c.type} ${f.kind}", f.kind,
+                    )
                 }
+                if (selectedCard >= lastShots.size) selectedCard = 0
+                drawSelected()
             }
+        }.start()
+    }
+
+    /** Draw the selected card's SIMULATED traces (real paths, never raycasts). */
+    private fun drawSelected() {
+        val f = lastFound.getOrNull(selectedCard)
+        if (f == null) {
+            view.strikerPath = emptyList()
+            view.coinPath = emptyList()
+            view.strikerAfter = emptyList()
+            view.comboPath = emptyList()
+            view.bestTarget = null
+            view.pocket = null
+            view.invalidate()
+            if (step == Step.RESULT) {
+                buildCards()
+                hint.text = "No clean pot (${Search.lastStats}) — check marks"
+            }
+            return
         }
+        val o = f.outcome
+        view.strikerPath = o.traceStriker.map { toImage(it) }
+        view.coinPath = (o.traces[f.targetIdx] ?: emptyList()).map { toImage(it) }
+        view.comboPath = if (f.viaIdx >= 0) {
+            (o.traces[f.viaIdx] ?: emptyList()).map { toImage(it) }
+        } else emptyList()
+        view.strikerAfter = emptyList() // deflection lives inside traceStriker
+        val tc = toImage(coins600of(f.targetIdx))
+        view.bestTarget = tc
+        view.pocket = pockets600().getOrNull(f.pocketIdx)?.let { toImage(it) }
         view.invalidate()
         if (step == Step.RESULT) buildCards()
-        if (msg == null && step != Step.RESULT) {
-            hint.text = shot?.let {
-                val tag = if (lastMine.getOrElse(selectedCard) { true }) "YOU" else "OPP"
-                "Live [$tag]: ${it.reason} aim=${"%.0f".format(aimDeg)}° (${Predictor.lastScan}) — Next ›"
-            } ?: "No clean pot yet (${Predictor.lastScan}) — keep marking"
+        val tag = if (lastMine.getOrElse(selectedCard) { true }) "YOU" else "OPP"
+        hint.text = "#${selectedCard + 1} [$tag][${f.kind}]: ${coinLabelOf(f.targetIdx)} → ${pocketNameOf(f.pocketIdx)} ★${"%.0f".format(f.score)} (${Search.lastStats})"
+    }
+
+    private fun coins600of(idx: Int): Pair<Float, Float> {
+        val c = view.coins[idx]
+        return to600(c.p)
+    }
+
+    private fun coinLabelOf(idx: Int): String {
+        val t = view.coins[idx].type
+        var n = 0
+        for (i in 0..idx) if (view.coins[i].type == t) n++
+        return when (t) {
+            "black" -> "B$n"
+            "white" -> "W$n"
+            else -> "Q"
         }
     }
 
+    private fun pocketNameOf(pi: Int): String {
+        val p = pockets600().getOrNull(pi) ?: return "P?"
+        val ideals = listOf("TL" to (50f to 50f), "TR" to (550f to 50f), "BL" to (50f to 550f), "BR" to (550f to 550f))
+        return ideals.minByOrNull { (_, c) ->
+            hypot(
+                (p.first - c.first).toDouble(),
+                (p.second - c.second).toDouble(),
+            )
+        }?.first ?: "P?"
+    }
+
     private fun showWhy() {
-        val lines = Predictor.lastRejects
+        val lines = Search.lastNotes
         android.app.AlertDialog.Builder(this)
-            .setTitle("Why coins were rejected (${lines.size})")
-            .setMessage(if (lines.isEmpty()) "Nothing rejected yet — mark pieces first." else lines.joinToString("\n"))
+            .setTitle("ULTRA verdicts (${lines.size})")
+            .setMessage(if (lines.isEmpty()) "Nothing searched yet — mark pieces first." else lines.joinToString("\n"))
             .setPositiveButton("Close", null)
             .show()
     }
 
-    private fun buildCards() {        cardsBox.removeAllViews()
+    private fun buildCards() {
+        cardsBox.removeAllViews()
         if (lastShots.isEmpty()) {
-            hint.text = "No clean pot — try Aim± or check marks"
+            hint.text = "No clean pot (${Search.lastStats}) — check marks"
             return
         }
-        val sh = lastShots.getOrNull(selectedCard) ?: lastShots.first()
-        val shTag = if (lastMine.getOrElse(selectedCard) { true }) "YOU" else "OPP threat"
-        hint.text = "#${selectedCard + 1} [$shTag]: ${sh.reason} ★${"%.2f".format(sh.score)} (${Predictor.lastScan})"
         lastShots.forEachIndexed { i, s ->
+            val f = lastFound.getOrNull(i)
             val tag = if (lastMine.getOrElse(i) { true }) "YOU" else "OPP"
+            val kind = f?.kind ?: s.kind
+            val label = if (f != null) {
+                "${coinLabelOf(f.targetIdx)} → ${pocketNameOf(f.pocketIdx)}"
+            } else s.reason
             val b = Button(this).apply {
-                text = "#${i + 1} [$tag] ${s.reason} ★${"%.2f".format(s.score)}"
+                text = "#${i + 1} [$tag][$kind] $label ★${"%.0f".format(s.score)}"
                 textSize = 13f
                 setBackgroundColor(
                     when {
                         i == selectedCard -> Color.parseColor("#0e5a73")
+                        kind == "BANK" -> Color.parseColor("#5a4a12")
+                        kind == "COMBO" -> Color.parseColor("#4a235a")
                         !lastMine.getOrElse(i) { true } -> Color.parseColor("#5a2323")
                         else -> Color.parseColor("#333333")
                     },
@@ -427,8 +502,7 @@ class AnalyzerActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     selectedCard = i
-                    manualAim = false
-                    refresh(null)
+                    drawSelected()
                 }
             }
             cardsBox.addView(b)

@@ -19,7 +19,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusOverlay: TextView
     private lateinit var statusShizuku: TextView
-    private lateinit var statusDemo: TextView
     private lateinit var sideBtn: Button
     private lateinit var samplesView: TextView
 
@@ -80,10 +79,6 @@ class MainActivity : AppCompatActivity() {
 
         statusOverlay = TextView(this).apply { textSize = 14f; gravity = Gravity.CENTER }
         statusShizuku = TextView(this).apply { textSize = 14f; gravity = Gravity.CENTER }
-        statusDemo = TextView(this).apply {
-            textSize = 14f; gravity = Gravity.CENTER
-            setPadding(16, 16, 16, 16)
-        }
 
         fun btn(label: String, onClick: () -> Unit) = Button(this).apply {
             text = label
@@ -117,8 +112,6 @@ class MainActivity : AppCompatActivity() {
             addView(btn("3. Start overlay over Carrom Pool") { startOverlay() })
             addView(btn("4. Analyze screenshot (accurate)") { pickImage.launch("image/*") })
             addView(btn("Stop overlay") { stopService(Intent(this@MainActivity, OverlayService::class.java)) })
-            addView(btn("Offline demo predict") { demo() })
-            addView(statusDemo)
             addView(TextView(context).apply {
                 textSize = 14f; gravity = Gravity.CENTER
                 text = samplesText()
@@ -187,14 +180,6 @@ class MainActivity : AppCompatActivity() {
         }
         startForegroundService(Intent(this, OverlayService::class.java))
         toast("Overlay started — open Carrom Pool")
-    }
-
-    private fun demo() {
-        val (striker, coins) = Predictor.demoState()
-        val pred = Predictor.fullPrediction(striker, coins)
-        statusDemo.text = pred.best?.let {
-            "BEST: ${it.reason} angle=${"%.1f".format(it.angleDeg)} score=${"%.3f".format(it.score)}"
-        } ?: "No clean pot found"
     }
 
     private fun toast(msg: String) {

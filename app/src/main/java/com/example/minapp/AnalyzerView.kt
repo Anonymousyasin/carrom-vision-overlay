@@ -41,6 +41,8 @@ class AnalyzerView(context: Context) : View(context) {
     var strikerPath: List<PointF> = emptyList()
     var coinPath: List<PointF> = emptyList()
     var strikerAfter: List<PointF> = emptyList()
+    /** Second-ball path for COMBO shots (orange). */
+    var comboPath: List<PointF> = emptyList()
     var bestTarget: PointF? = null
     var pocket: PointF? = null
 
@@ -396,6 +398,10 @@ class AnalyzerView(context: Context) : View(context) {
         color = Color.CYAN; style = Paint.Style.STROKE; strokeWidth = 4f
         pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f); isAntiAlias = true
     }
+    private val comboPaint = Paint().apply {
+        color = Color.rgb(255, 165, 0); style = Paint.Style.STROKE; strokeWidth = 6f
+        isAntiAlias = true
+    }
     private val dotPaint = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true }
     private val ringPaint = Paint().apply {
         style = Paint.Style.STROKE; strokeWidth = 5f; isAntiAlias = true
@@ -496,6 +502,7 @@ class AnalyzerView(context: Context) : View(context) {
         path(strikerPath, strikerLine, 6f)
         path(coinPath, coinLine, 6f)
         path(strikerAfter, afterPaint, 4f)
+        path(comboPath, comboPaint, 6f)
         bestTarget?.let {
             ringPaint.color = Color.YELLOW
             ringPaint.strokeWidth = 5f * px

@@ -25,6 +25,7 @@ object Predictor {
         val angleDeg: Float, val angleRad: Float,
         val pocketX: Float, val pocketY: Float,
         val score: Float, val reason: String,
+        val kind: String = "DIRECT",
     )
     data class Prediction(
         val strikerPath: List<Pair<Float, Float>>,

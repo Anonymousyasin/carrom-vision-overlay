@@ -395,7 +395,8 @@ object SampleExporter {
                     .put("target_board600", arr(best.targetX, best.targetY))
                     .put("pocket_board600", arr(best.pocketX, best.pocketY))
                     .put("angle_deg", best.angleDeg)
-                    .put("score", best.score))
+                    .put("score", best.score)
+                    .put("kind", best.kind))
             }
             if (!writePublic(ctx, "$id.json", "application/json", root.toString(1).toByteArray())) {
                 return fail("MediaStore insert JSON: $lastError")
