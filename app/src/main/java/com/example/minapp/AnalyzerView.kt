@@ -29,7 +29,10 @@ class AnalyzerView(context: Context) : View(context) {
     val markRadii = mutableMapOf<String, Float>()
     val coins = mutableListOf<CoinMark>() // image px, type locked by wizard step
 
-    data class CoinMark(val p: PointF, val type: String, var r: Float = 0f)
+    data class CoinMark(val p: PointF, val type: String, var r: Float = 0f) {
+        var conf: Float = 1f
+        var touched: Boolean = true // manual taps start confirmed
+    }
 
     /** Selection for resize: coin index or named marker key. */
     var selCoin = -1
@@ -300,6 +303,13 @@ class AnalyzerView(context: Context) : View(context) {
     private fun dragCircle(ip: PointF, bm: Bitmap) {
         if (grabCoin >= 0 && grabCoin < coins.size) {
             val c = coins[grabCoin]
+            if (!c.touched) {
+                // moving an auto mark = a correction: training signal
+                c.touched = true
+                try {
+                    TuneRunner.noteCorrection(context)
+                } catch (_: Exception) { }
+            }
             val p = clampBmp(ip, bm)
             c.p.x = p.x; c.p.y = p.y
             selCoin = grabCoin; selMark = null
@@ -317,6 +327,7 @@ class AnalyzerView(context: Context) : View(context) {
         if (ci >= 0 || mk != null) {
             selCoin = ci
             selMark = mk
+            if (ci >= 0) coins[ci].touched = true // confirm by touch
             invalidate()
             return
         }
@@ -466,6 +477,11 @@ class AnalyzerView(context: Context) : View(context) {
             canvas.drawText(label, c.p.x + 20f * px, c.p.y + 10f * px, labelPaint)
             if (selCoin == i) {
                 ringPaint.color = Color.YELLOW
+                ringPaint.strokeWidth = 4f * px
+                canvas.drawCircle(c.p.x, c.p.y, rr + 8f * px, ringPaint)
+            } else if (!c.touched && c.conf < 0.85f) {
+                // gated review: unsure auto-mark pulses amber until confirmed
+                ringPaint.color = Color.rgb(255, 165, 0)
                 ringPaint.strokeWidth = 4f * px
                 canvas.drawCircle(c.p.x, c.p.y, rr + 8f * px, ringPaint)
             } else if (pulseOn && i == coins.size - 1 && activeMark in listOf("BLACK", "WHITE", "QUEEN")) {

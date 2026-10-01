@@ -123,7 +123,7 @@ object SampleExporter {
         } catch (_: Exception) { }
     }
 
-    private fun findUri(ctx: Context, name: String): Uri? {
+    fun findUri(ctx: Context, name: String): Uri? {
         return try {
             ctx.contentResolver.query(
                 downloads(),

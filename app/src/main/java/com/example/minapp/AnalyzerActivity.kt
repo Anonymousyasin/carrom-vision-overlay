@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PointF
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -137,6 +138,7 @@ class AnalyzerActivity : AppCompatActivity() {
                 sbtn("Clear") { clearStep() },
                 skipBtn,
                 sbtn("Zoom 1:1") { view.resetZoom() },
+                sbtn("✨ Auto") { autoFill() },
                 sbtn("🔍 Why") { showWhy() },
                 nextBtn,
             ))
@@ -232,6 +234,7 @@ class AnalyzerActivity : AppCompatActivity() {
     }
 
     private fun undoStep() {
+        if (TuneRunner.autoActive(this)) TuneRunner.noteCorrection(this)
         when (step) {
             Step.BLACK -> view.coins.indexOfLast { it.type == "black" }
                 .takeIf { it >= 0 }?.let {
@@ -269,6 +272,7 @@ class AnalyzerActivity : AppCompatActivity() {
     }
 
     private fun clearStep() {
+        if (TuneRunner.autoActive(this)) TuneRunner.noteCorrection(this)
         when (step) {
             Step.BLACK -> view.coins.removeAll { it.type == "black" }
             Step.WHITE -> view.coins.removeAll { it.type == "white" }
@@ -509,6 +513,50 @@ class AnalyzerActivity : AppCompatActivity() {
         }
     }
 
+    /** Training engine: auto-mark coins + queen, gated review follows. */
+    private fun autoFill() {
+        val bm = view.bitmap ?: run {
+            toast("No image")
+            return
+        }
+        if (view.box.width() < 8f) {
+            toast("Drag the Box onto the board first")
+            return
+        }
+        toast("Marking coins…")
+        refresh("Detecting pieces…")
+        Thread {
+            val marks = try {
+                ClassicalCore.detect(bm, RectF(view.box), TuneRunner.current(this))
+            } catch (e: Exception) {
+                runOnUiThread { toast("Detect failed: ${e.message}") }
+                return@Thread
+            }
+            runOnUiThread {
+                view.coins.removeAll { it.type == "black" || it.type == "white" || it.type == "red" }
+                var auto = 0
+                var sure = 0
+                for (m in marks) {
+                    if (view.coins.size >= 20) break
+                    view.coins.add(
+                        AnalyzerView.CoinMark(PointF(m.x, m.y), m.type, m.r).apply {
+                            conf = m.conf
+                            touched = m.conf >= 0.85f
+                        },
+                    )
+                    auto++
+                    if (m.conf >= 0.85f) sure++
+                }
+                view.selCoin = -1
+                view.selMark = null
+                TuneRunner.noteAuto(this, auto)
+                refresh(null)
+                view.invalidate()
+                toast("Marked $auto ($sure sure, ${auto - sure} check amber) — engine v${TuneRunner.version(this)}")
+            }
+        }.start()
+    }
+
     private fun decode(uri: Uri): Bitmap? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -550,6 +598,7 @@ class AnalyzerActivity : AppCompatActivity() {
             )
             runOnUiThread {
                 val err = SampleExporter.lastError
+                TuneRunner.clearAuto(this)
                 toast(if (id != null) "Saved $id (${SampleExporter.count(this)} samples)" else "Save failed: $err")
             }
         }.start()

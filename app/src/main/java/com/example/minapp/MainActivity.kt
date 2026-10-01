@@ -27,6 +27,45 @@ class MainActivity : AppCompatActivity() {
         return "Training samples: $n in Download/CarromSamples (tap to browse)"
     }
 
+    private fun tuneEngine() {
+        val bar = android.widget.ProgressBar(
+            this, null, android.R.attr.progressBarStyleHorizontal,
+        ).apply { max = 100 }
+        val dlg = android.app.AlertDialog.Builder(this)
+            .setTitle("Tuning engine…")
+            .setView(bar)
+            .setCancelable(false)
+            .show()
+        Thread {
+            val res = TuneRunner.tune(this, 60) { p ->
+                runOnUiThread { bar.progress = p }
+            }
+            runOnUiThread {
+                dlg.dismiss()
+                android.app.AlertDialog.Builder(this)
+                    .setTitle(if (res.improved) "Engine improved → v${res.version} 🎉" else "Engine v${res.version}")
+                    .setMessage(res.detail)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    private fun engineStats() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Training engine")
+            .setMessage(TuneRunner.statsText(this))
+            .setPositiveButton("Share brain", null)
+            .setNegativeButton("Close", null)
+            .show()
+            .also { d ->
+                d.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                    TuneRunner.shareBrain(this)
+                    toast("brain.json shared to Download/CarromSamples")
+                }
+            }
+    }
+
     private fun browseSamples() {
         val items = SampleExporter.list(this)
         if (items.isEmpty()) {
@@ -118,6 +157,8 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { browseSamples() }
             }.also { samplesView = it })
             addView(btn("Share all samples") { SampleExporter.share(this@MainActivity, null) })
+            addView(btn("Tune engine (learn from samples)") { tuneEngine() })
+            addView(btn("Engine stats + share brain") { engineStats() })
             })
         }
         setContentView(root)
