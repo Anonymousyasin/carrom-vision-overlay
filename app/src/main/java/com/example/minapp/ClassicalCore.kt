@@ -60,7 +60,7 @@ object ClassicalCore {
     }
 
     /** Detect inside [box] (source-bitmap px). Returns marks in same coords. */
-    fun detect(src: Bitmap, box: RectF, p: Params = TuneRunner.current()): List<Mark> {
+    fun detect(src: Bitmap, box: RectF, p: Params): List<Mark> {
         if (box.width() < 8f || box.height() < 8f) return emptyList()
         val bx = box.left.toInt().coerceIn(0, src.width - 1)
         val by = box.top.toInt().coerceIn(0, src.height - 1)
