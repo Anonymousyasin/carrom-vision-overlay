@@ -303,13 +303,7 @@ class AnalyzerView(context: Context) : View(context) {
     private fun dragCircle(ip: PointF, bm: Bitmap) {
         if (grabCoin >= 0 && grabCoin < coins.size) {
             val c = coins[grabCoin]
-            if (!c.touched) {
-                // moving an auto mark = a correction: training signal
-                c.touched = true
-                try {
-                    TuneRunner.noteCorrection(context)
-                } catch (_: Exception) { }
-            }
+            c.touched = true
             val p = clampBmp(ip, bm)
             c.p.x = p.x; c.p.y = p.y
             selCoin = grabCoin; selMark = null

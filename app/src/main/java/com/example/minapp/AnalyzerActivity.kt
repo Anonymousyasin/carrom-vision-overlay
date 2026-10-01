@@ -42,6 +42,9 @@ class AnalyzerActivity : AppCompatActivity() {
     private var playWhite = true
     private var selectedCard = 0
     private var lastShots: List<Predictor.Shot> = emptyList()
+    /** Data-gen mode: mark + save only, no search/AI UI. */
+    private var dataMode = false
+    private lateinit var whyBtn: Button
     /** Parallel to lastShots: true = your color, false = opponent threat. */
     private var lastMine: List<Boolean> = emptyList()
     /** Full ULTRA results (traces) parallel to lastShots. */
@@ -123,6 +126,7 @@ class AnalyzerActivity : AppCompatActivity() {
         }
         nextBtn = sbtn("Next ›") { next() }
         skipBtn = sbtn("Skip") { next() }
+        whyBtn = sbtn("🔍 Why") { showWhy() }
 
         saveBtn = sbtn("💾 Save") { saveSample() }
         val root = LinearLayout(this).apply {
@@ -138,8 +142,7 @@ class AnalyzerActivity : AppCompatActivity() {
                 sbtn("Clear") { clearStep() },
                 skipBtn,
                 sbtn("Zoom 1:1") { view.resetZoom() },
-                sbtn("✨ Auto") { autoFill() },
-                sbtn("🔍 Why") { showWhy() },
+                whyBtn,
                 nextBtn,
             ))
             addView(row(
@@ -149,6 +152,7 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
         }
         setContentView(root)
+        dataMode = intent.getStringExtra("mode") == "data"
         // saved color from the menu ("I play White/Black"); RESULT toggle still overrides
         playWhite = getSharedPreferences("cv_prefs", MODE_PRIVATE).getBoolean("playWhite", true)
         sideBtn.text = if (playWhite) "I:White" else "I:Black"
@@ -183,10 +187,11 @@ class AnalyzerActivity : AppCompatActivity() {
             Step.QUEEN -> "Step 4/7 · Red queen (${if (queen) 1 else 0}/1)"
             Step.STRIKER -> "Step 5/7 · Your striker (${if (sPlaced) 1 else 0}/1)"
             Step.POCKETS -> "Step 6/7 · Pockets ($pockets/4)"
-            Step.RESULT -> "Step 7/7 · Predictions"
+            Step.RESULT -> if (dataMode) "Review + Save" else "Step 7/7 · Predictions"
         }
         skipBtn.visibility = if (step == Step.QUEEN) View.VISIBLE else View.GONE
-        nextBtn.text = if (step == Step.POCKETS) "Results ›" else "Next ›"
+        nextBtn.text = if (step == Step.POCKETS) "Review ›" else "Next ›"
+        whyBtn.visibility = if (dataMode) View.GONE else View.VISIBLE
         cardsScroll.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         sideBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
         saveBtn.visibility = if (step == Step.RESULT) View.VISIBLE else View.GONE
@@ -234,7 +239,6 @@ class AnalyzerActivity : AppCompatActivity() {
     }
 
     private fun undoStep() {
-        if (TuneRunner.autoActive(this)) TuneRunner.noteCorrection(this)
         when (step) {
             Step.BLACK -> view.coins.indexOfLast { it.type == "black" }
                 .takeIf { it >= 0 }?.let {
@@ -272,7 +276,6 @@ class AnalyzerActivity : AppCompatActivity() {
     }
 
     private fun clearStep() {
-        if (TuneRunner.autoActive(this)) TuneRunner.noteCorrection(this)
         when (step) {
             Step.BLACK -> view.coins.removeAll { it.type == "black" }
             Step.WHITE -> view.coins.removeAll { it.type == "white" }
@@ -362,6 +365,25 @@ class AnalyzerActivity : AppCompatActivity() {
             view.pocket = null
             view.invalidate()
             if (msg == null && step == Step.RESULT) hint.text = "Need striker + coins"
+            return
+        }
+        if (dataMode) {
+            // mark + save only: no search, no lines — just a live count
+            view.strikerPath = emptyList()
+            view.coinPath = emptyList()
+            view.strikerAfter = emptyList()
+            view.comboPath = emptyList()
+            view.bestTarget = null
+            view.pocket = null
+            view.invalidate()
+            if (msg == null) {
+                val p = view.markers.keys.count { it.startsWith("P") }
+                hint.text = if (step == Step.RESULT) {
+                    "Review: ${view.coins.size} coins · S ✓ · $p/4 pockets → 💾 Save"
+                } else {
+                    "${view.coins.size} coins marked — Next ›"
+                }
+            }
             return
         }
         // markers draw instantly; ULTRA search runs off the UI thread
@@ -513,50 +535,6 @@ class AnalyzerActivity : AppCompatActivity() {
         }
     }
 
-    /** Training engine: auto-mark coins + queen, gated review follows. */
-    private fun autoFill() {
-        val bm = view.bitmap ?: run {
-            toast("No image")
-            return
-        }
-        if (view.box.width() < 8f) {
-            toast("Drag the Box onto the board first")
-            return
-        }
-        toast("Marking coins…")
-        refresh("Detecting pieces…")
-        Thread {
-            val marks = try {
-                ClassicalCore.detect(bm, RectF(view.box), TuneRunner.current(this))
-            } catch (e: Exception) {
-                runOnUiThread { toast("Detect failed: ${e.message}") }
-                return@Thread
-            }
-            runOnUiThread {
-                view.coins.removeAll { it.type == "black" || it.type == "white" || it.type == "red" }
-                var auto = 0
-                var sure = 0
-                for (m in marks) {
-                    if (view.coins.size >= 20) break
-                    view.coins.add(
-                        AnalyzerView.CoinMark(PointF(m.x, m.y), m.type, m.r).apply {
-                            conf = m.conf
-                            touched = m.conf >= 0.85f
-                        },
-                    )
-                    auto++
-                    if (m.conf >= 0.85f) sure++
-                }
-                view.selCoin = -1
-                view.selMark = null
-                TuneRunner.noteAuto(this, auto)
-                refresh(null)
-                view.invalidate()
-                toast("Marked $auto ($sure sure, ${auto - sure} check amber) — engine v${TuneRunner.version(this)}")
-            }
-        }.start()
-    }
-
     private fun decode(uri: Uri): Bitmap? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -598,7 +576,6 @@ class AnalyzerActivity : AppCompatActivity() {
             )
             runOnUiThread {
                 val err = SampleExporter.lastError
-                TuneRunner.clearAuto(this)
                 toast(if (id != null) "Saved $id (${SampleExporter.count(this)} samples)" else "Save failed: $err")
             }
         }.start()
