@@ -21,6 +21,8 @@ class TableView(context: Context) : View(context) {
     var strikerPath: List<PointF> = emptyList()
     var coinPath: List<PointF> = emptyList()
     var strikerAfter: List<PointF> = emptyList()
+    /** Second-ball path for COMBO shots (orange). */
+    var comboPath: List<PointF> = emptyList()
     var pocket: PointF? = null
     var boxAdjust = false
     var sideMe = true
@@ -44,6 +46,10 @@ class TableView(context: Context) : View(context) {
     private val afterPaint = Paint().apply {
         color = Color.CYAN; style = Paint.Style.STROKE; strokeWidth = 4f
         pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f); isAntiAlias = true
+    }
+    private val comboPaint = Paint().apply {
+        color = Color.rgb(255, 165, 0); style = Paint.Style.STROKE; strokeWidth = 6f
+        isAntiAlias = true
     }
     private val dotPaint = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true }
     private val ringPaint = Paint().apply {
@@ -106,6 +112,12 @@ class TableView(context: Context) : View(context) {
             canvas.drawLine(
                 strikerAfter[i].x, strikerAfter[i].y,
                 strikerAfter[i + 1].x, strikerAfter[i + 1].y, afterPaint,
+            )
+        }
+        for (i in 0 until comboPath.size - 1) {
+            canvas.drawLine(
+                comboPath[i].x, comboPath[i].y,
+                comboPath[i + 1].x, comboPath[i + 1].y, comboPaint,
             )
         }
         pocket?.let {

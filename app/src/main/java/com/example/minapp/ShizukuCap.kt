@@ -25,8 +25,7 @@ object ShizukuCap {
     }
 
     /** Capture screen to absolute path via privileged shell. Null on failure. */
-    fun capture(absPath: String): Boolean {
-        if (!isRunning() || !isGranted()) return false
+    fun capture(absPath: String): Boolean {        if (!isRunning() || !isGranted()) return false
         return try {
             // newProcess is hidden in api 13.x — reach it via reflection
             val m = Shizuku::class.java.methods.firstOrNull {
@@ -44,5 +43,22 @@ object ShizukuCap {
         !isRunning() -> "Shizuku: not running (start Shizuku app first)"
         !isGranted() -> "Shizuku: running, permission needed"
         else -> "Shizuku: ready"
+    }
+
+    /** Screencap straight to a (possibly downsampled) Bitmap for live loops. */
+    fun captureBitmap(cacheDir: java.io.File, maxDim: Int = 1280): android.graphics.Bitmap? {
+        return try {
+            val f = java.io.File(cacheDir, "auto_frame.png")
+            if (!capture(f.absolutePath)) return null
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(f.absolutePath, bounds)
+            var sample = 1
+            val md = bounds.outWidth.coerceAtLeast(bounds.outHeight)
+            while (md / sample > maxDim) sample *= 2
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            android.graphics.BitmapFactory.decodeFile(f.absolutePath, opts)
+        } catch (_: Exception) {
+            null
+        }
     }
 }

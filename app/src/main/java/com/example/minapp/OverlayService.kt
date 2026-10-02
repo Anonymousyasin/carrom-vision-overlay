@@ -50,6 +50,12 @@ class OverlayService : Service() {
     private var aimDeg = 0f
     private var manualAim = false
 
+    // ---- AUTO real-time: model detect + ULTRA aim, refreshed on a loop ----
+    private var autoMode = false
+    private var autoGen = 0
+    private var toolModel: ToolModel.Model? = null
+    private var autoBtn: Button? = null
+
     private val ui = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -73,6 +79,8 @@ class OverlayService : Service() {
     }
 
     override fun onDestroy() {
+        autoMode = false
+        ui.removeCallbacksAndMessages(null)
         for (v in listOf(table, touchLayer, panel)) {
             try { if (v != null) wm.removeView(v) } catch (_: Exception) { }
         }
@@ -189,53 +197,67 @@ class OverlayService : Service() {
     private fun sbtn(label: String, onClick: () -> Unit): Button {
         return Button(this).apply {
             text = label
-            textSize = 11f
-            setPadding(8, 4, 8, 4)
+            textSize = 12f
+            setPadding(10, 6, 10, 6)
             minimumWidth = 0
             setOnClickListener { onClick() }
         }
     }
 
-    private fun row(vararg views: View): LinearLayout {
-        return LinearLayout(this).apply {
+    private fun row(vararg views: View): View {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             for (v in views) addView(v)
+        }
+        return android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        }
+    }
+
+    private fun cardBg(): android.graphics.drawable.Drawable {
+        return android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = 36f
+            setColor(Color.argb(225, 16, 22, 30))
+            setStroke(2, Color.argb(120, 0, 220, 255))
         }
     }
 
     private fun addPanel() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(205, 20, 20, 20))
-            setPadding(14, 14, 14, 14)
+            background = cardBg()
+            setPadding(18, 16, 18, 16)
         }
         val header = TextView(this).apply {
-            text = "◉ Carrom Vision (drag me)"
-            setTextColor(Color.CYAN); textSize = 13f
+            text = "◉ Carrom Vision  ·  drag me"
+            setTextColor(Color.CYAN); textSize = 15f
         }
         hint = TextView(this).apply {
-            textSize = 12f; setTextColor(Color.WHITE)
+            textSize = 12f; setTextColor(Color.LTGRAY)
             setPadding(0, 6, 0, 6)
         }
         root.addView(header)
         root.addView(hint)
         root.addView(row(
+            sbtn("▶ AUTO") { toggleAuto() }.also { autoBtn = it },
             sbtn("Box") { toggleBox() },
+            sbtn("X") { stopSelf() },
+        ))
+        root.addView(row(
             sbtn("S1") { arm("S1") },
             sbtn("S2") { arm("S2") },
             sbtn("T") { arm("T") },
-        ))
-        root.addView(row(
             sbtn("P1") { arm("P1") },
             sbtn("P2") { arm("P2") },
-            sbtn("Me/Opp") { sideMe = !sideMe; refresh(null) },
-            sbtn("Best") { snapBest() },
         ))
         root.addView(row(
+            sbtn("Me/Opp") { sideMe = !sideMe; refresh(null) },
+            sbtn("Best") { snapBest() },
             sbtn("Aim−") { aimDeg = (aimDeg - 2f + 360f) % 360f; manualAim = true; refresh(null) },
             sbtn("Aim+") { aimDeg = (aimDeg + 2f) % 360f; manualAim = true; refresh(null) },
             sbtn("Shot") { captureBoard() },
-            sbtn("X") { stopSelf() },
         ))
 
         val params = overlayParams(
@@ -296,6 +318,147 @@ class OverlayService : Service() {
             if (!markers.containsKey(k)) return "Next: place $k."
         }
         return if (sideMe) "Turn: YOU (S1→P1)." else "Turn: OPP (S2→P2)."
+    }
+
+    // ---------- AUTO real-time: model detect + ULTRA aim ----------
+
+    private fun playWhite(): Boolean =
+        getSharedPreferences("cv_prefs", MODE_PRIVATE).getBoolean("playWhite", true)
+
+    private fun toggleAuto() {
+        if (autoMode) {
+            autoMode = false
+            ui.removeCallbacksAndMessages(null)
+            autoBtn?.text = "▶ AUTO"
+            refresh("Auto off — manual marks active.")
+            return
+        }
+        if (toolModel == null) toolModel = ToolModel.loadFromApp(this)
+        if (toolModel == null) {
+            toast("No model — menu → Import model first")
+            return
+        }
+        if (!ShizukuCap.isRunning() || !ShizukuCap.isGranted()) {
+            toast("AUTO needs Shizuku ready")
+            return
+        }
+        if (box.width() < 8f) {
+            toast("Drag the Box onto the board first")
+            return
+        }
+        autoMode = true
+        autoBtn?.text = "⏸ AUTO"
+        refresh("AUTO on — detecting…")
+        autoLoop()
+    }
+
+    private fun autoLoop() {
+        ui.postDelayed({
+            if (!autoMode) return@postDelayed
+            autoTick()
+        }, 2500)
+    }
+
+    private fun autoTick() {
+        val gen = ++autoGen
+        val m = toolModel ?: run {
+            autoLoop()
+            return
+        }
+        val wantWhite = playWhite()
+        Thread {
+            val t0 = System.currentTimeMillis()
+            val shot = ShizukuCap.captureBitmap(cacheDir, 1280)
+            if (shot == null) {
+                ui.post {
+                    if (gen == autoGen) hint.text = "AUTO: capture failed — check Shizuku"
+                    autoLoop()
+                }
+                return@Thread
+            }
+            try {
+                // map overlay box (screen px) into screenshot px
+                val sw = shot.width.toFloat() / screenW.coerceAtLeast(1)
+                val sh = shot.height.toFloat() / screenH.coerceAtLeast(1)
+                val sbox = RectF(
+                    box.left * sw, box.top * sh, box.right * sw, box.bottom * sh,
+                )
+                val crop = ToolDetect.crop600(shot, sbox)
+                val res = ToolDetect.detectBoard(crop, m)
+                try {
+                    crop.recycle()
+                } catch (_: Exception) { }
+                if (res.striker == null || res.coins.isEmpty()) {
+                    ui.post {
+                        if (gen == autoGen) {
+                            hint.text = "AUTO: ${res.coins.size} coins, no striker — adjust Box"
+                        }
+                        autoLoop()
+                    }
+                    return@Thread
+                }
+                val s600 = res.striker.x to res.striker.y
+                val coins600 = res.coins.map {
+                    Predictor.Coin(it.x, it.y, it.type, it.r)
+                }
+                val pkts = res.pockets.map { it.x to it.y }
+                val pktR = res.pockets.map { it.r }
+                val found = Search.fast(
+                    s600, res.striker.r, coins600, wantWhite, pkts, pktR, 800,
+                )
+                val best = found.firstOrNull()
+                val ms = System.currentTimeMillis() - t0
+                ui.post {
+                    if (gen != autoGen) return@post
+                    if (best == null) {
+                        hint.text = "AUTO ${ms}ms · ${coins600.size} coins · no clean pot"
+                        autoLoop()
+                        return@post
+                    }
+                    applyAutoBest(s600, coins600, pkts, best, ms)
+                    autoLoop()
+                }
+            } catch (e: Exception) {
+                ui.post {
+                    if (gen == autoGen) hint.text = "AUTO error: ${e.message}"
+                    autoLoop()
+                }
+            } finally {
+                try {
+                    shot.recycle()
+                } catch (_: Exception) { }
+            }
+        }.start()
+    }
+
+    private fun applyAutoBest(
+        s600: Pair<Float, Float>,
+        coins600: List<Predictor.Coin>,
+        pkts: List<Pair<Float, Float>>,
+        best: Search.Found,
+        ms: Long,
+    ) {
+        val t = table ?: return
+        val o = best.outcome
+        markers["S1"] = toScreen(s600)
+        val tc = coins600[best.targetIdx]
+        markers["T"] = toScreen(tc.x to tc.y)
+        val pk = pkts[best.pocketIdx]
+        markers["P1"] = toScreen(pk)
+        t.box = box
+        t.markers = markers.toMap()
+        t.boxAdjust = false
+        t.sideMe = true
+        t.strikerPath = o.traceStriker.map { toScreen(it) }
+        t.coinPath = (o.traces[best.targetIdx] ?: emptyList()).map { toScreen(it) }
+        t.comboPath = if (best.viaIdx >= 0) {
+            (o.traces[best.viaIdx] ?: emptyList()).map { toScreen(it) }
+        } else emptyList()
+        t.strikerAfter = emptyList()
+        t.pocket = toScreen(pk)
+        t.invalidate()
+        val tag = if (playWhite()) "YOU" else "OPP"
+        hint.text = "AUTO ${ms}ms [$tag][${best.kind}] ★${"%.0f".format(best.score)} · ${coins600.size} coins"
     }
 
     private fun snapBest() {
