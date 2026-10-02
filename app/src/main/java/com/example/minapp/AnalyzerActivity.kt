@@ -142,7 +142,8 @@ class AnalyzerActivity : AppCompatActivity() {
                 sbtn("Clear") { clearStep() },
                 skipBtn,
                 sbtn("Zoom 1:1") { view.resetZoom() },
-                whyBtn,
+                sbtn("🔍 Tool") { toolAuto() },
+                sbtn("🔍 Why") { showWhy() },
                 nextBtn,
             ))
             addView(row(
@@ -533,6 +534,80 @@ class AnalyzerActivity : AppCompatActivity() {
             }
             cardsBox.addView(b)
         }
+    }
+
+    /** Tool-model auto-mark: learned colour mixtures drive detection.
+     *  Model = Download/carrom_model.json (Termux training output). */
+    private var toolModel: ToolModel.Model? = null
+
+    private fun toolAuto() {
+        val bm = view.bitmap ?: run {
+            toast("No image")
+            return
+        }
+        if (view.box.width() < 8f) {
+            toast("Drag the Box onto the board first")
+            return
+        }
+        if (toolModel == null) {
+            toolModel = try {
+                val txt = java.io.File("/storage/emulated/0/Download/carrom_model.json").readText()
+                ToolModel.load(txt)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        val m = toolModel ?: run {
+            toast("No model — train in Termux, copy carrom_model.json to Download")
+            return
+        }
+        toast("Tool detecting…")
+        refresh("Tool model detecting pieces…")
+        Thread {
+            val crop = ToolDetect.crop600(bm, view.box)
+            val res = try {
+                ToolDetect.detectBoard(crop, m)
+            } catch (e: Exception) {
+                runOnUiThread { toast("Detect failed: ${e.message}") }
+                return@Thread
+            } finally {
+                try {
+                    crop.recycle()
+                } catch (_: Exception) { }
+            }
+            runOnUiThread {
+                // map board600 (box space) back to bitmap pixels
+                val b = view.box
+                fun bx(x: Float) = b.left + x / 600f * b.width()
+                fun by(y: Float) = b.top + y / 600f * b.height()
+                fun br(r: Float) = r / 600f * b.width()
+                view.coins.removeAll { it.type == "black" || it.type == "white" || it.type == "red" }
+                for (c in res.coins) {
+                    if (view.coins.size >= 20) break
+                    view.coins.add(
+                        AnalyzerView.CoinMark(PointF(bx(c.x), by(c.y)), c.type, br(c.r)).apply {
+                            conf = 0.7f
+                            touched = false // amber until you tap to confirm
+                        },
+                    )
+                }
+                res.striker?.let { s ->
+                    view.markers["S"] = PointF(bx(s.x), by(s.y))
+                    view.markRadii["S"] = br(s.r)
+                    if (view.selMark == "S") view.selMark = null
+                }
+                val keys = listOf("P1", "P2", "P3", "P4")
+                for ((i, p) in res.pockets.withIndex()) {
+                    if (i >= keys.size) break
+                    view.markers[keys[i]] = PointF(bx(p.x), by(p.y))
+                    view.markRadii[keys[i]] = br(p.r)
+                }
+                view.selCoin = -1
+                refresh(null)
+                view.invalidate()
+                toast("Tool: ${res.coins.size} coins, striker ${if (res.striker != null) "yes" else "NO"} — tap amber to confirm")
+            }
+        }.start()
     }
 
     private fun decode(uri: Uri): Bitmap? {
