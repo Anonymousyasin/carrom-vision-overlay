@@ -75,44 +75,55 @@ object Search {
                 seeds.add(Seed(ang, i, pi, -1, "DIRECT", 1.5f, 0.3f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
             }
         }
-        // BANK: cushion-first. Correct mirror construction: reflect the GHOST
-        // point (not the pocket) across the EFFECTIVE cushion (wall inset by
-        // striker radius — discs bounce r early, a point-mirror misses by ~2r),
-        // aim the striker straight at it; the sim validates cushion-first
-        // contact. The crossing must lie on the cushion segment.
-        fun crossOnWall(
-            gx: Float, gy: Float,
-            wall: Char,
+        // BANK: cushion-first. Restitution-aware solve: find the wall point W
+        // minimizing the angle between the (inelastic) outgoing direction and
+        // the ghost — a specular mirror misses by ~2r plus bounce flattening.
+        fun solveBankWall(
+            fx: Float, fy: Float,
+            tx: Float, ty: Float,
+            fixed: Float, vertical: Boolean,
         ): Pair<Float, Float>? {
-            // returns mirrored ghost if S->G' crosses `wall` within bounds
-            val eL = Sim.LO + strikerR
-            val eR = Sim.HI - strikerR
-            val eT = Sim.LO + strikerR
-            val eB = Sim.HI - strikerR
-            val (mx, my) = when (wall) {
-                'L' -> (2 * eL - gx) to gy
-                'R' -> (2 * eR - gx) to gy
-                'T' -> gx to (2 * eT - gy)
-                else -> gx to (2 * eB - gy)
-            }
-            val dx = mx - striker.first
-            val dy = my - striker.second
-            if (wall == 'L' || wall == 'R') {
-                val edge = if (wall == 'L') eL else eR
-                if (abs(dx) < 1e-6f) return null
-                val t = (edge - striker.first) / dx
-                if (t <= 0f || t >= 1f) return null
-                val y = striker.second + t * dy
-                if (y < Sim.LO || y > Sim.HI) return null
+            val nx: Float
+            val ny: Float
+            if (vertical) {
+                nx = if (fixed < 300f) 1f else -1f; ny = 0f
             } else {
-                val edge = if (wall == 'T') eT else eB
-                if (abs(dy) < 1e-6f) return null
-                val t = (edge - striker.second) / dy
-                if (t <= 0f || t >= 1f) return null
-                val x = striker.first + t * dx
-                if (x < Sim.LO || x > Sim.HI) return null
+                nx = 0f; ny = if (fixed < 300f) 1f else -1f
             }
-            return mx to my
+            fun err(w: Float): Float {
+                val wx = if (vertical) fixed else w
+                val wy = if (vertical) w else fixed
+                var dx = wx - fx
+                var dy = wy - fy
+                val l = hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+                dx /= l; dy /= l
+                val dn = dx * nx + dy * ny
+                val ox = dx - dn * (1 + Sim.REST) * nx
+                val oy = dy - dn * (1 + Sim.REST) * ny
+                var gx = tx - wx
+                var gy = ty - wy
+                val gl = hypot(gx.toDouble(), gy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+                gx /= gl; gy /= gl
+                val ol = hypot(ox.toDouble(), oy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+                return acos(((ox * gx + oy * gy) / ol).coerceIn(-1f, 1f))
+            }
+            var a = Sim.LO
+            var b = Sim.HI
+            val gr = 0.618034f
+            var c = b - gr * (b - a)
+            var d = a + gr * (b - a)
+            repeat(24) {
+                if (err(c) < err(d)) {
+                    b = d
+                } else {
+                    a = c
+                }
+                c = b - gr * (b - a)
+                d = a + gr * (b - a)
+            }
+            val w = (a + b) / 2f
+            if (err(w) > 0.17f) return null // > ~10deg: no clean bank here
+            return (if (vertical) fixed else w) to (if (vertical) w else fixed)
         }
         for (i in ownIdx) {
             val c = coins[i]
@@ -123,13 +134,46 @@ object Search {
                 if (dl < 1e-6f) continue
                 val gx = c.x - dx / dl * (c.r + strikerR)
                 val gy = c.y - dy / dl * (c.r + strikerR)
-                for (w in listOf('L', 'R', 'T', 'B')) {
-                    val m = crossOnWall(gx, gy, w) ?: continue
+                val walls = listOf(
+                    (Sim.LO + strikerR) to true,
+                    (Sim.HI - strikerR) to true,
+                    (Sim.LO + strikerR) to false,
+                    (Sim.HI - strikerR) to false,
+                )
+                for ((edge, vertical) in walls) {
+                    // solve against the ghost: striker must ARRIVE at G
+                    val wpt = solveBankWall(striker.first, striker.second, gx, gy, edge, vertical)
+                        ?: continue
                     val ang = atan2(
-                        (m.second - striker.second).toDouble(),
-                        (m.first - striker.first).toDouble(),
+                        (wpt.second - striker.second).toDouble(),
+                        (wpt.first - striker.first).toDouble(),
                     ).toFloat()
-                    seeds.add(Seed(ang, i, pi, -1, "BANK", 4.0f, 0.5f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
+                    seeds.add(Seed(ang, i, pi, -1, "BANK", 2.5f, 0.4f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
+                }
+            }
+        }
+        // CBANK (coin bank): restitution-aware wall solve sending the COIN
+        // to the pocket, then aim the striker at the resulting ghost.
+        for (i in ownIdx) {
+            val c = coins[i]
+            for ((pi, p) in pockets.withIndex()) {
+                val walls = listOf(
+                    (Sim.LO + c.r) to true,
+                    (Sim.HI - c.r) to true,
+                    (Sim.LO + c.r) to false,
+                    (Sim.HI - c.r) to false,
+                )
+                for ((edge, vertical) in walls) {
+                    val wpt = solveBankWall(c.x, c.y, p.first, p.second, edge, vertical)
+                        ?: continue
+                    val ux = wpt.first - c.x
+                    val uy = wpt.second - c.y
+                    val ul = hypot(ux.toDouble(), uy.toDouble()).toFloat()
+                    if (ul < 1e-6f) continue
+                    val gx = c.x - ux / ul * (c.r + strikerR)
+                    val gy = c.y - uy / ul * (c.r + strikerR)
+                    val ang = atan2((gy - striker.second).toDouble(), (gx - striker.first).toDouble()).toFloat()
+                    seeds.add(Seed(ang, i, pi, -1, "CBANK", 2.5f, 0.4f, listOf(Sim.SPEED_MED, Sim.SPEED_HARD)))
                 }
             }
         }
@@ -210,6 +254,7 @@ object Search {
         fun kindRank(k: String) = when (k) {
             "DIRECT" -> 0
             "BANK" -> 1
+            "CBANK" -> 1
             else -> 2
         }
         lastStats = "$sims sims (${seededSims} seeded), ${found.size} clean"
@@ -229,6 +274,49 @@ object Search {
         }
         lastNotes = notes
         return ranked
+    }
+
+    /**
+     * Baseline sweep like the script tool: slide the striker along its
+     * baseline zone, run a lite search per spot, keep the best position.
+     * Skips spots overlapping coins (same rule as the script).
+     * Returns (bestX, bestFound or null if nothing anywhere).
+     */
+    fun sweepBaseline(
+        strikerY: Float,
+        strikerR: Float,
+        coins: List<Predictor.Coin>,
+        playWhite: Boolean,
+        pockets: List<Pair<Float, Float>>,
+        pocketR: List<Float>?,
+        fromX: Float = 80f,
+        toX: Float = 520f,
+        stepX: Float = 40f,
+        budgetEachMs: Long = 350,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): Pair<Float, Found?> {
+        var x = fromX
+        var count = 0
+        val total = ((toX - fromX) / stepX).toInt() + 1
+        var bestX = fromX
+        var best: Found? = null
+        while (x <= toX + 1e-6f) {
+            count++
+            onProgress(count, total)
+            val blocked = coins.any {
+                hypot((x - it.x).toDouble(), (strikerY - it.y).toDouble()) < strikerR + it.r + 1f
+            }
+            if (!blocked) {
+                val top = fast(x to strikerY, strikerR, coins, playWhite, pockets, pocketR, budgetEachMs)
+                    .firstOrNull()
+                if (top != null && (best == null || top.score > best.score)) {
+                    best = top
+                    bestX = x
+                }
+            }
+            x += stepX
+        }
+        return bestX to best
     }
 
     private fun cutBetween(ax: Float, ay: Float, bx: Float, by: Float): Float {
@@ -327,10 +415,12 @@ object Search {
         val kind = when {
             via >= 0 -> "COMBO"
             o.cushionFirst -> "BANK"
+            hint == "CBANK" -> "CBANK"
             else -> "DIRECT"
         }
         score *= when (kind) {
             "BANK" -> 0.85f
+            "CBANK" -> 0.8f
             "COMBO" -> 0.7f
             else -> 1f
         }

@@ -148,6 +148,7 @@ class AnalyzerActivity : AppCompatActivity() {
             ))
             addView(row(
                 sideBtn,
+                sbtn("♢ Spot") { bestSpot() },
                 saveBtn,
                 sbtn("X") { finish() },
             ))
@@ -515,12 +516,13 @@ class AnalyzerActivity : AppCompatActivity() {
                 "${coinLabelOf(f.targetIdx)} → ${pocketNameOf(f.pocketIdx)}"
             } else s.reason
             val b = Button(this).apply {
-                text = "#${i + 1} [$tag][$kind] $label ★${"%.0f".format(s.score)}"
+                val angTxt = if (f != null) " ∠${"%.0f".format(f.angleDeg)}°" else ""
+                text = "#${i + 1} [$tag][$kind] $label ★${"%.0f".format(s.score)}$angTxt"
                 textSize = 13f
                 setBackgroundColor(
                     when {
                         i == selectedCard -> Color.parseColor("#0e5a73")
-                        kind == "BANK" -> Color.parseColor("#5a4a12")
+                        kind == "BANK" || kind == "CBANK" -> Color.parseColor("#5a4a12")
                         kind == "COMBO" -> Color.parseColor("#4a235a")
                         !lastMine.getOrElse(i) { true } -> Color.parseColor("#5a2323")
                         else -> Color.parseColor("#333333")
@@ -603,6 +605,57 @@ class AnalyzerActivity : AppCompatActivity() {
                 toast("Tool: ${res.coins.size} coins, striker ${if (res.striker != null) "yes" else "NO"} — tap amber to confirm")
             }
         }.start()
+    }
+
+    /** Baseline sweep: find the best striker x on the current baseline. */
+    private fun bestSpot() {
+        val s = view.markers["S"] ?: run {
+            toast("Place S first")
+            return
+        }
+        val coins600 = currentCoins()
+        if (coins600.isEmpty()) {
+            toast("Mark coins first")
+            return
+        }
+        val pkts = pockets600()
+        val pktR = pocketRadii600()
+        val sr = strikerR600()
+        val s600 = to600(s)
+        val wantWhite = playWhite
+        toast("Sweeping baseline…")
+        Thread {
+            var done = 0
+            val (bx, bf) = Search.sweepBaseline(
+                s600.second, sr, coins600, wantWhite, pkts, pktR,
+            ) { c, t ->
+                done = c
+                runOnUiThread { hint.text = "Sweeping baseline $c/$t…" }
+            }
+            runOnUiThread {
+                if (bf == null) {
+                    toast("No shot from anywhere on the baseline")
+                    refresh(null)
+                    return@runOnUiThread
+                }
+                // move S marker to best x (image coords), keep y
+                val b = view.box
+                view.markers["S"] = PointF(
+                    b.left + bx / 600f * b.width(),
+                    s.y,
+                )
+                selectedCard = 0
+                refresh(null)
+                toast("Best spot x=${bx.toInt()} ★${"%.0f".format(bf.score)} (${bf.kind})")
+            }
+        }.start()
+    }
+
+    private fun currentCoins(): List<Predictor.Coin> {
+        return view.coins.mapIndexed { i, c ->
+            val q = to600(c.p)
+            Predictor.Coin(q.first, q.second, c.type, r600(view.coinR(i)))
+        }
     }
 
     private fun decode(uri: Uri): Bitmap? {
