@@ -211,6 +211,9 @@ object SampleExporter {
         coins: List<InCoin>,
         playWhite: Boolean,
         best: Predictor.Shot?,
+        verified: Boolean = true,
+        source: String = "manual",
+        reviewFlags: List<String> = emptyList(),
     ): String? {
         fun fail(stage: String, e: Exception? = null): String? {
             lastError = if (e != null) "$stage: ${e.javaClass.simpleName} ${e.message}" else stage
@@ -353,7 +356,7 @@ object SampleExporter {
                 .put("id", id)
                 .put("captured_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()))
                 .put("app", "carrom-vision-overlay")
-                .put("source", "manual")
+                .put("source", source)
                 .put("device", JSONObject()
                     .put("model", Build.MODEL)
                     .put("os", "Android ${Build.VERSION.RELEASE}"))
@@ -386,9 +389,10 @@ object SampleExporter {
                 .put("screenshot", true)
                 .put("overlapping_cluster", occByIdx.any { it > 0 }))
                 .put("provenance", JSONObject()
-                    .put("taps", "manual")
-                    .put("model_assist", false)
-                    .put("verified", true))
+                    .put("taps", if (source == "manual") "manual" else "auto")
+                    .put("model_assist", source != "manual")
+                    .put("verified", verified)
+                    .put("review_flags", JSONArray(reviewFlags)))
                 .put("match", JSONObject.NULL)
             if (best != null) {
                 root.put("prediction", JSONObject()

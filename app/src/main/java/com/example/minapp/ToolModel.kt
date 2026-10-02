@@ -156,6 +156,22 @@ object ToolModel {
         return out
     }
 
+    /** Load order: app-private import first (scoped-storage safe),
+     *  then legacy Download path (works pre-Android-10 / rooted). */
+    fun loadFromApp(ctx: android.content.Context): Model? {
+        try {
+            val f = java.io.File(ctx.filesDir, "carrom_model.json")
+            if (f.exists()) {
+                load(f.readText())?.let { return it }
+            }
+        } catch (_: Exception) { }
+        return try {
+            load(java.io.File("/storage/emulated/0/Download/carrom_model.json").readText())
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Mahalanobis distance of an RGB pixel to the nearest component of a class. */
     fun maha(r: Float, g: Float, b: Float, comps: List<Comp>): Float {
         var best = Float.MAX_VALUE

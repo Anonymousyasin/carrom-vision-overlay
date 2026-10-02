@@ -550,15 +550,10 @@ class AnalyzerActivity : AppCompatActivity() {
             return
         }
         if (toolModel == null) {
-            toolModel = try {
-                val txt = java.io.File("/storage/emulated/0/Download/carrom_model.json").readText()
-                ToolModel.load(txt)
-            } catch (_: Exception) {
-                null
-            }
+            toolModel = ToolModel.loadFromApp(this)
         }
         val m = toolModel ?: run {
-            toast("No model — train in Termux, copy carrom_model.json to Download")
+            toast("No model — menu → Import model, pick carrom_model.json")
             return
         }
         toast("Tool detecting…")
