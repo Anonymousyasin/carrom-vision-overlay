@@ -166,13 +166,18 @@ object ToolDetect {
             }
             var got = 0
             val maxn = caps[type] ?: 9
+            var done = false
             repeat(maxn + 4) {
+                if (done) return@repeat
                 var bi = -1
                 var bs = -1f
                 for (i in resp.indices) if (resp[i] > bs) {
                     bs = resp[i]; bi = i
                 }
-                if (bi < 0 || bs < m.thr[type]!!) return@repeat
+                if (bi < 0 || bs < m.thr[type]!!) {
+                    done = true
+                    return@repeat
+                }
                 val cx = (bi % WS).toFloat()
                 val cy = (bi / WS).toFloat()
                 // centroid refine in disc
